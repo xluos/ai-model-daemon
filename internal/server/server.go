@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xluos/ai-model-daemon/pkg/download"
 	"github.com/xluos/ai-model-daemon/pkg/fit"
@@ -21,7 +23,7 @@ type Server struct {
 	listener net.Listener
 	mux      *http.ServeMux
 	mu       sync.Mutex
-	active   map[string]bool
+	active   map[string]context.CancelFunc
 	config   download.Config
 	token    string
 }
@@ -29,12 +31,13 @@ type Server struct {
 func New(token string) *Server {
 	s := &Server{
 		mux:    http.NewServeMux(),
-		active: make(map[string]bool),
+		active: make(map[string]context.CancelFunc),
 		token:  token,
 	}
 	s.mux.HandleFunc("GET /models", s.handleListModels)
 	s.mux.HandleFunc("GET /models/{id}", s.handleGetModel)
 	s.mux.HandleFunc("POST /models/{id}/download", s.handleDownload)
+	s.mux.HandleFunc("POST /models/{id}/cancel-download", s.handleCancelDownload)
 	s.mux.HandleFunc("GET /models/{id}/path", s.handleModelPath)
 	s.mux.HandleFunc("DELETE /models/{id}", s.handleDeleteModel)
 	s.mux.HandleFunc("GET /status", s.handleStatus)
@@ -102,7 +105,7 @@ type modelStatus struct {
 
 func (s *Server) getModelStatus(m *manifest.Model) modelStatus {
 	s.mu.Lock()
-	downloading := s.active[m.ID]
+	_, downloading := s.active[m.ID]
 	s.mu.Unlock()
 
 	allReady := true
@@ -197,15 +200,17 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
-	if s.active[id] {
+	if _, exists := s.active[id]; exists {
 		s.mu.Unlock()
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "download already in progress"})
 		return
 	}
-	s.active[id] = true
+	ctx, cancel := context.WithCancel(r.Context())
+	s.active[id] = cancel
 	s.mu.Unlock()
 
 	defer func() {
+		cancel()
 		s.mu.Lock()
 		delete(s.active, id)
 		s.mu.Unlock()
@@ -240,7 +245,13 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 
 		destPath := storage.ModelFilePath(id, f.Filename)
 		fileRole := f.Role
-		err := download.Download(f.URLs, destPath, f.Bytes, s.config, func(p download.Progress) {
+		dlCfg := s.config
+		if raw := r.URL.Query().Get("progressInterval"); raw != "" {
+			if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+				dlCfg.ProgressInterval = time.Duration(ms) * time.Millisecond
+			}
+		}
+		err := download.Download(ctx, f.URLs, destPath, f.Bytes, dlCfg, func(p download.Progress) {
 			p.ModelID = id
 			p.FileRole = fileRole
 			data, _ := json.Marshal(p)
@@ -249,8 +260,10 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		})
 
 		if err != nil {
+			cancelled := ctx.Err() != nil
 			data, _ := json.Marshal(map[string]interface{}{
-				"modelId": id, "fileRole": fileRole, "ok": false, "error": err.Error(),
+				"modelId": id, "fileRole": fileRole, "ok": false,
+				"error": err.Error(), "cancelled": cancelled,
 			})
 			fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
 			flusher.Flush()
@@ -261,6 +274,19 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	data, _ := json.Marshal(map[string]interface{}{"modelId": id, "ok": true})
 	fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
 	flusher.Flush()
+}
+
+func (s *Server) handleCancelDownload(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.mu.Lock()
+	cancel, exists := s.active[id]
+	s.mu.Unlock()
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no active download for this model"})
+		return
+	}
+	cancel()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func (s *Server) handleModelPath(w http.ResponseWriter, r *http.Request) {
@@ -412,7 +438,7 @@ func (s *Server) handleRecommended(w http.ResponseWriter, r *http.Request) {
 			MemPercent:          a.MemPercent,
 			TPS:                 a.TPS,
 			Ready:               allReady,
-			Downloading:         s.active[a.ID],
+			Downloading:         func() bool { _, ok := s.active[a.ID]; return ok }(),
 		})
 	}
 

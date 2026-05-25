@@ -8,16 +8,17 @@ Shared local AI model management daemon. Provides model file storage, download (
 
 ```
 main.go                         CLI entry (serve/status/list/download/path/hardware/recommend)
-internal/
+pkg/
   manifest/manifest.go          Model registry with quantization metadata
   storage/storage.go            Shared model file storage (~/.../AIModels/)
-  download/download.go          Resumable HTTP download with mirror fallback
+  download/download.go          Resumable HTTP download with mirror fallback (EMA-smoothed speed)
   hardware/                     Platform-specific hardware detection
     hardware.go                 Core detection logic (CPU/RAM/GPU/backend)
     hardware_darwin.go           macOS: sysctl for memory, brand string
     hardware_linux.go            Linux: /proc/cpuinfo, sysinfo
     hardware_windows.go          Windows: GlobalMemoryStatusEx, wmic
   fit/fit.go                    Fit calculation, TPS estimation, model sorting
+internal/
   server/
     server.go                   HTTP API handlers (Unix socket)
     listen_unix.go              Unix socket listener
@@ -51,7 +52,7 @@ internal/
 - `GET /status` — Daemon status
 - `GET /models` — List models (optional `?app=` filter)
 - `GET /models/{id}` — Get single model status
-- `POST /models/{id}/download` — Download (SSE progress stream)
+- `POST /models/{id}/download` — Download (SSE progress stream, optional `?progressInterval=` ms)
 - `GET /models/{id}/path` — Get file paths
 - `DELETE /models/{id}` — Delete model files
 - `POST /config` — Set preferences (mirror)

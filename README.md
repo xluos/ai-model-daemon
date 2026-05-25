@@ -147,13 +147,19 @@ curl --unix-socket ~/Library/Application\ Support/AIModels/.daemon.sock \
 | `GET` | `/status` | 守护进程状态 |
 | `GET` | `/models` | 模型列表（可选 `?app=clipiq` 过滤） |
 | `GET` | `/models/{id}` | 单个模型状态 |
-| `POST` | `/models/{id}/download` | 下载模型（SSE 流式进度） |
+| `POST` | `/models/{id}/download` | 下载模型（SSE 流式进度，可选 `?progressInterval=` 毫秒） |
 | `GET` | `/models/{id}/path` | 获取模型文件路径 |
 | `DELETE` | `/models/{id}` | 删除模型文件 |
 | `POST` | `/config` | 设置偏好（镜像源等） |
 | `GET` | `/hardware` | 硬件检测信息 |
 | `GET` | `/models/recommended` | 模型推荐列表（含 fit / memPercent / tps，按适配度排序） |
 | `POST` | `/models/{id}/recompute-fit` | 用自定义 context size 重算 fit |
+
+### 下载 API 参数
+
+`POST /models/{id}/download` 支持以下 query 参数：
+
+- `progressInterval` — SSE 进度推送间隔（毫秒），默认 `2000`。速度值使用 EMA（指数移动平均，α=0.3）平滑，避免瞬时跳动。示例：`?progressInterval=500` 表示每 500ms 推送一次进度
 
 ### 推荐 API 参数
 
@@ -244,16 +250,17 @@ TPS = 平台常数 / 参数量(B) × 量化速度系数
 
 ```
 main.go                              CLI 入口
-internal/
+pkg/
   manifest/manifest.go               模型注册表（含量化元数据）
   storage/storage.go                  共享模型文件存储
-  download/download.go                断点续传下载
+  download/download.go                断点续传下载（EMA 平滑速度）
   hardware/
     hardware.go                       硬件检测核心逻辑
     hardware_darwin.go                macOS: sysctl 内存 + CPU
     hardware_linux.go                 Linux: /proc/cpuinfo + sysinfo
     hardware_windows.go               Windows: GlobalMemoryStatusEx + wmic
   fit/fit.go                          fit 计算 / TPS 估算 / 排序
+internal/
   server/
     server.go                         HTTP API 处理器
     listen_unix.go                    Unix socket 监听

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -245,7 +246,7 @@ func cmdDownload(id string) {
 		}
 		fmt.Printf("downloading %s [%s] ...\n", m.Name, label)
 
-		err := download.Download(f.URLs, destPath, f.Bytes, download.Config{}, func(p download.Progress) {
+		err := download.Download(context.Background(), f.URLs, destPath, f.Bytes, download.Config{}, func(p download.Progress) {
 			fmt.Printf("\r  %d%% (%d / %d MB) @ %.1f MB/s",
 				p.Pct,
 				p.Done/(1024*1024),

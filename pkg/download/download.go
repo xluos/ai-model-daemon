@@ -23,7 +23,8 @@ type Progress struct {
 
 // Config holds download preferences.
 type Config struct {
-	PreferMirror string // "hf-mirror" | "huggingface" | "modelscope" | "" (auto)
+	PreferMirror     string        // "hf-mirror" | "huggingface" | "modelscope" | "" (auto)
+	ProgressInterval time.Duration // SSE progress push interval; 0 means default (500ms)
 }
 
 // Download fetches a file with resumable support.
@@ -130,11 +131,17 @@ func downloadFromURL(ctx context.Context, url, partPath, urlPath, destPath strin
 	}
 	defer f.Close()
 
+	progressInterval := cfg.ProgressInterval
+	if progressInterval <= 0 {
+		progressInterval = 2 * time.Second
+	}
+
 	buf := make([]byte, 64*1024)
 	done := partSize
 	lastReport := time.Now()
 	lastReportDone := done
-	speedWindow := int64(0)
+	const emaAlpha = 0.3
+	emaSpeed := float64(0)
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -149,9 +156,12 @@ func downloadFromURL(ctx context.Context, url, partPath, urlPath, destPath strin
 
 			now := time.Now()
 			elapsed := now.Sub(lastReport)
-			if elapsed >= 500*time.Millisecond || (done-lastReportDone) >= 100*1024 {
-				if elapsed > 0 {
-					speedWindow = int64(float64(done-lastReportDone) / elapsed.Seconds())
+			if elapsed >= progressInterval {
+				instantSpeed := float64(done-lastReportDone) / elapsed.Seconds()
+				if emaSpeed == 0 {
+					emaSpeed = instantSpeed
+				} else {
+					emaSpeed = emaAlpha*instantSpeed + (1-emaAlpha)*emaSpeed
 				}
 				pct := 0
 				if total > 0 {
@@ -162,7 +172,7 @@ func downloadFromURL(ctx context.Context, url, partPath, urlPath, destPath strin
 						Done:   done,
 						Total:  total,
 						Pct:    pct,
-						Speed:  speedWindow,
+						Speed:  int64(emaSpeed),
 						Mirror: url,
 					})
 				}
