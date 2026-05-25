@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -65,6 +67,14 @@ Commands:
   recommend          List models sorted by fit for this machine (JSON)`)
 }
 
+func generateToken() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%x", os.Getpid())
+	}
+	return hex.EncodeToString(b)
+}
+
 func cmdServe() {
 	if err := storage.EnsureDir(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -73,11 +83,15 @@ func cmdServe() {
 
 	socketPath := storage.SocketPath()
 	pidPath := storage.PIDPath()
+	tokenPath := storage.TokenPath()
 
 	pid := os.Getpid()
-	os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644)
+	token := generateToken()
 
-	srv := server.New()
+	os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644)
+	os.WriteFile(tokenPath, []byte(token), 0600)
+
+	srv := server.New(token)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -86,12 +100,14 @@ func cmdServe() {
 		srv.Close()
 		os.Remove(socketPath)
 		os.Remove(pidPath)
+		os.Remove(tokenPath)
 		os.Exit(0)
 	}()
 
 	ready := map[string]interface{}{
 		"socket": socketPath,
 		"pid":    pid,
+		"token":  token,
 	}
 	readyJSON, _ := json.Marshal(ready)
 	fmt.Println(string(readyJSON))
@@ -99,6 +115,7 @@ func cmdServe() {
 	if err := srv.ListenAndServe(socketPath); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Remove(pidPath)
+		os.Remove(tokenPath)
 		os.Exit(1)
 	}
 }

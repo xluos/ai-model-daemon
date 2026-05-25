@@ -23,12 +23,14 @@ type Server struct {
 	mu       sync.Mutex
 	active   map[string]bool
 	config   download.Config
+	token    string
 }
 
-func New() *Server {
+func New(token string) *Server {
 	s := &Server{
 		mux:    http.NewServeMux(),
 		active: make(map[string]bool),
+		token:  token,
 	}
 	s.mux.HandleFunc("GET /models", s.handleListModels)
 	s.mux.HandleFunc("GET /models/{id}", s.handleGetModel)
@@ -49,7 +51,20 @@ func (s *Server) ListenAndServe(socketPath string) error {
 		return fmt.Errorf("listen: %w", err)
 	}
 	s.listener = ln
-	return http.Serve(ln, s.mux)
+	return http.Serve(ln, s.withAuth(s.mux))
+}
+
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.token != "" {
+			auth := r.Header.Get("Authorization")
+			if auth != "Bearer "+s.token {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func Cleanup(socketPath string) {

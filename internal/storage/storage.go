@@ -37,6 +37,11 @@ func PIDPath() string {
 	return filepath.Join(Dir(), ".daemon.pid")
 }
 
+// TokenPath returns the auth token file path.
+func TokenPath() string {
+	return filepath.Join(Dir(), ".daemon.token")
+}
+
 // ModelDir returns the directory for a specific model.
 func ModelDir(modelID string) string {
 	return filepath.Join(Dir(), modelID)
