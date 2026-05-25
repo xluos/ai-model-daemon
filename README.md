@@ -83,9 +83,64 @@ ai-model-daemon recommend
 }
 ```
 
+## 鉴权
+
+daemon 启动时自动生成一个随机 token，通过两种方式暴露给客户端：
+
+1. **启动输出** — `serve` 命令的 ready JSON 包含 `token` 字段
+2. **token 文件** — 写入 `.daemon.token`（权限 `0600`，仅 owner 可读），路径与 socket 同目录
+
+所有 HTTP API 请求必须携带 `Authorization: Bearer <token>` 头，否则返回 `401 Unauthorized`。
+
+### 客户端接入示例
+
+**方式一：从启动输出获取（适用于父进程拉起 daemon）**
+
+```javascript
+const child = spawn("ai-model-daemon", ["serve"]);
+child.stdout.on("data", (chunk) => {
+  const ready = JSON.parse(chunk.toString());
+  // ready.socket — Unix socket 路径
+  // ready.token  — Bearer token
+});
+```
+
+**方式二：从 token 文件读取（适用于独立客户端连接已运行的 daemon）**
+
+```javascript
+const token = fs.readFileSync(
+  path.join(daemonStorageDir, ".daemon.token"),
+  "utf-8"
+).trim();
+```
+
+**发起请求**
+
+```javascript
+const http = require("node:http");
+const req = http.request({
+  socketPath: "/path/to/.daemon.sock",
+  path: "/models/recommended?app=clipiq",
+  headers: { "Authorization": "Bearer " + token },
+});
+```
+
+```bash
+# CLI 调试
+curl --unix-socket ~/Library/Application\ Support/AIModels/.daemon.sock \
+  -H "Authorization: Bearer $(cat ~/Library/Application\ Support/AIModels/.daemon.token)" \
+  http://localhost/hardware
+```
+
+### 生命周期
+
+- daemon 启动 → 生成 token → 写入 `.daemon.token` + ready JSON
+- daemon 退出（SIGINT/SIGTERM）→ 删除 `.daemon.token` + `.daemon.sock` + `.daemon.pid`
+- 每次重启生成新 token，旧 token 立即失效
+
 ## HTTP API
 
-守护进程通过 Unix socket 提供 HTTP API，客户端（如 Electron 应用）通过 socket 连接调用。
+守护进程通过 Unix socket 提供 HTTP API，客户端（如 Electron 应用）通过 socket 连接调用。所有请求需携带 `Authorization: Bearer <token>` 头。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -110,7 +165,9 @@ ai-model-daemon recommend
 ### 重算 fit
 
 ```bash
-curl --unix-socket ~/.../AIModels/.daemon.sock \
+TOKEN=$(cat ~/Library/Application\ Support/AIModels/.daemon.token)
+curl --unix-socket ~/Library/Application\ Support/AIModels/.daemon.sock \
+  -H "Authorization: Bearer $TOKEN" \
   -X POST http://localhost/models/qwen3_5_4b_q4km/recompute-fit \
   -d '{"contextSize": 32768}'
 ```
