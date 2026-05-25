@@ -10,12 +10,12 @@ import (
 	"strconv"
 	"syscall"
 
-	"github.com/xushuaiwu/ai-model-daemon/internal/download"
-	"github.com/xushuaiwu/ai-model-daemon/internal/fit"
-	"github.com/xushuaiwu/ai-model-daemon/internal/hardware"
-	"github.com/xushuaiwu/ai-model-daemon/internal/manifest"
-	"github.com/xushuaiwu/ai-model-daemon/internal/server"
-	"github.com/xushuaiwu/ai-model-daemon/internal/storage"
+	"github.com/xluos/ai-model-daemon/pkg/download"
+	"github.com/xluos/ai-model-daemon/pkg/fit"
+	"github.com/xluos/ai-model-daemon/pkg/hardware"
+	"github.com/xluos/ai-model-daemon/pkg/manifest"
+	"github.com/xluos/ai-model-daemon/internal/server"
+	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
 func main() {

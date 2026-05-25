@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/xushuaiwu/ai-model-daemon/internal/hardware"
-	"github.com/xushuaiwu/ai-model-daemon/internal/manifest"
+	"github.com/xluos/ai-model-daemon/pkg/hardware"
+	"github.com/xluos/ai-model-daemon/pkg/manifest"
 )
 
 type FitLevel string

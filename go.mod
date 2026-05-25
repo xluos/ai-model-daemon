@@ -1,3 +1,3 @@
-module github.com/xushuaiwu/ai-model-daemon
+module github.com/xluos/ai-model-daemon
 
 go 1.22

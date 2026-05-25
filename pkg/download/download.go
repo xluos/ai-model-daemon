@@ -1,6 +1,7 @@
 package download
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,7 +28,8 @@ type Config struct {
 
 // Download fetches a file with resumable support.
 // Tries URLs in order; on failure of one, tries next.
-func Download(urls []string, destPath string, expectedBytes int64, cfg Config, onProgress func(Progress)) error {
+// The context can be used to cancel the download; partial .part files are preserved for resume.
+func Download(ctx context.Context, urls []string, destPath string, expectedBytes int64, cfg Config, onProgress func(Progress)) error {
 	if len(urls) == 0 {
 		return fmt.Errorf("no download URLs provided")
 	}
@@ -41,16 +43,22 @@ func Download(urls []string, destPath string, expectedBytes int64, cfg Config, o
 
 	var lastErr error
 	for _, u := range urls {
-		err := downloadFromURL(u, partPath, urlPath, destPath, expectedBytes, cfg, onProgress)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		err := downloadFromURL(ctx, u, partPath, urlPath, destPath, expectedBytes, cfg, onProgress)
 		if err == nil {
 			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		lastErr = err
 	}
 	return fmt.Errorf("all mirrors failed, last error: %w", lastErr)
 }
 
-func downloadFromURL(url, partPath, urlPath, destPath string, expectedBytes int64, cfg Config, onProgress func(Progress)) error {
+func downloadFromURL(ctx context.Context, url, partPath, urlPath, destPath string, expectedBytes int64, cfg Config, onProgress func(Progress)) error {
 	if data, err := os.ReadFile(urlPath); err == nil {
 		if string(data) != url {
 			os.Remove(partPath)
@@ -62,7 +70,7 @@ func downloadFromURL(url, partPath, urlPath, destPath string, expectedBytes int6
 		partSize = info.Size()
 	}
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return fmt.Errorf("build request: %w", err)
 	}
@@ -80,8 +88,11 @@ func downloadFromURL(url, partPath, urlPath, destPath string, expectedBytes int6
 	if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
 		os.Remove(partPath)
 		partSize = 0
-		req.Header.Del("Range")
 		resp.Body.Close()
+		req, err = http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return fmt.Errorf("build request (retry): %w", err)
+		}
 		resp, err = client.Do(req)
 		if err != nil {
 			return fmt.Errorf("http request (retry): %w", err)
@@ -126,6 +137,9 @@ func downloadFromURL(url, partPath, urlPath, destPath string, expectedBytes int6
 	speedWindow := int64(0)
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
 			if _, wErr := f.Write(buf[:n]); wErr != nil {

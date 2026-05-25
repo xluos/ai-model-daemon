@@ -10,11 +10,11 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xushuaiwu/ai-model-daemon/internal/download"
-	"github.com/xushuaiwu/ai-model-daemon/internal/fit"
-	"github.com/xushuaiwu/ai-model-daemon/internal/hardware"
-	"github.com/xushuaiwu/ai-model-daemon/internal/manifest"
-	"github.com/xushuaiwu/ai-model-daemon/internal/storage"
+	"github.com/xluos/ai-model-daemon/pkg/download"
+	"github.com/xluos/ai-model-daemon/pkg/fit"
+	"github.com/xluos/ai-model-daemon/pkg/hardware"
+	"github.com/xluos/ai-model-daemon/pkg/manifest"
+	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
 type Server struct {
@@ -344,6 +344,8 @@ type recommendedModel struct {
 	ContextSize         int                   `json:"contextSize,omitempty"`
 	NativeContextSize   int                   `json:"nativeContextSize,omitempty"`
 	Quantizations       []manifest.Quantization `json:"quantizations,omitempty"`
+	IsThinking          bool                  `json:"isThinking,omitempty"`
+	Available           *bool                 `json:"available,omitempty"`
 	Fit                 fit.FitLevel          `json:"fit"`
 	MemPercent          int                   `json:"memPercent"`
 	TPS                 int                   `json:"tps"`
@@ -404,6 +406,8 @@ func (s *Server) handleRecommended(w http.ResponseWriter, r *http.Request) {
 			ContextSize:         a.ContextSize,
 			NativeContextSize:   a.NativeContextSize,
 			Quantizations:       a.Quantizations,
+			IsThinking:          a.IsThinking,
+			Available:           a.Available,
 			Fit:                 a.Fit,
 			MemPercent:          a.MemPercent,
 			TPS:                 a.TPS,
