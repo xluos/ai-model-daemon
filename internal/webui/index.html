@@ -333,9 +333,27 @@ textarea{resize:vertical;min-height:60px}
         </div>
         <div id="ocr-upload-info" style="font-size:12px;color:var(--text2);margin-top:6px"></div>
         <div id="ocr-preview" style="margin-top:8px;max-height:200px;overflow:hidden"></div>
+        <details style="margin-top:10px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--text2)">识别参数</summary>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:10px;margin-top:6px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius)">
+            <label style="font-size:12px;color:var(--text2)">检测框阈值
+              <input type="number" id="ocr-box-thresh" value="" min="0" max="1" step="0.05" placeholder="0.6" style="margin-top:2px">
+            </label>
+            <label style="font-size:12px;color:var(--text2)">识别置信度阈值
+              <input type="number" id="ocr-rec-thresh" value="" min="0" max="1" step="0.05" placeholder="0.0" style="margin-top:2px">
+            </label>
+            <label style="font-size:12px;color:var(--text2)">检测像素阈值
+              <input type="number" id="ocr-det-thresh" value="" min="0" max="1" step="0.05" placeholder="0.3" style="margin-top:2px">
+            </label>
+            <label style="font-size:12px;color:var(--text2)">检测长边限制
+              <input type="number" id="ocr-det-limit" value="" min="320" step="32" placeholder="960" style="margin-top:2px">
+            </label>
+          </div>
+        </details>
       </div>
       <div class="card" id="ocr-result-card" style="display:none">
         <h3>识别结果</h3>
+        <div id="ocr-meta" style="font-size:12px;color:var(--text2);margin-top:4px"></div>
         <div id="ocr-text-result" style="font-size:14px;line-height:1.8;margin-top:8px;white-space:pre-wrap"></div>
         <details style="margin-top:12px">
           <summary style="cursor:pointer;font-size:12px;color:var(--text2)">原始 JSON</summary>
@@ -511,12 +529,15 @@ async function loadDashboard() {
 
   if (q.ok) {
     const qs = q.data;
-    document.getElementById('dash-queue').innerHTML = `<h3>请求队列</h3><dl class="kv">
-      <dt>LLM 排队中</dt><dd>${qs.llmQueue.pending}</dd>
-      <dt>LLM 当前模型</dt><dd>${qs.llmQueue.currentModel || '—'}</dd>
-      <dt>Whisper 排队中</dt><dd>${qs.whisperQueue.pending}</dd>
-      <dt>Whisper 当前模型</dt><dd>${qs.whisperQueue.currentModel || '—'}</dd>
-    </dl>`;
+    const queues = qs.queues || {};
+    const kindLabel = { llm:'LLM', whisper:'Whisper', 'faster-whisper':'faster-whisper', ocr:'OCR' };
+    let kvHTML = '';
+    for (const [kind, info] of Object.entries(queues)) {
+      const label = kindLabel[kind] || kind;
+      kvHTML += `<dt>${label} 排队中</dt><dd>${info.pending}</dd>`;
+      kvHTML += `<dt>${label} 当前模型</dt><dd>${info.currentModel || '—'}</dd>`;
+    }
+    document.getElementById('dash-queue').innerHTML = `<h3>请求队列</h3><dl class="kv">${kvHTML}</dl>`;
   } else {
     document.getElementById('dash-queue').innerHTML = errCard('请求队列', '加载失败');
   }
@@ -838,13 +859,16 @@ async function loadQueue() {
   if (!res.ok) { toast('队列状态加载失败'); return; }
   const qs = res.data;
 
-  document.getElementById('q-status').innerHTML = `<h3>队列状态</h3><dl class="kv">
-    <dt>LLM 排队中</dt><dd>${qs.llmQueue.pending}</dd>
-    <dt>LLM 当前模型</dt><dd>${qs.llmQueue.currentModel || '—'}</dd>
-    <dt>LLM 已处理批次</dt><dd>${qs.llmQueue.batchServed}</dd>
-    <dt>Whisper 排队中</dt><dd>${qs.whisperQueue.pending}</dd>
-    <dt>Whisper 当前模型</dt><dd>${qs.whisperQueue.currentModel || '—'}</dd>
-  </dl>`;
+  const queues = qs.queues || {};
+  const kindLabel = { llm:'LLM', whisper:'Whisper', 'faster-whisper':'faster-whisper', ocr:'OCR' };
+  let kvHTML = '';
+  for (const [kind, info] of Object.entries(queues)) {
+    const label = kindLabel[kind] || kind;
+    kvHTML += `<dt>${label} 排队中</dt><dd>${info.pending}</dd>`;
+    kvHTML += `<dt>${label} 当前模型</dt><dd>${info.currentModel || '—'}</dd>`;
+    kvHTML += `<dt>${label} 已处理批次</dt><dd>${info.batchServed}</dd>`;
+  }
+  document.getElementById('q-status').innerHTML = `<h3>队列状态</h3><dl class="kv">${kvHTML}</dl>`;
 }
 
 async function updateQueueConfig() {
@@ -1248,11 +1272,23 @@ async function runOCR() {
   document.getElementById('ocr-result-card').style.display = 'block';
   document.getElementById('ocr-text-result').textContent = '识别中...';
   document.getElementById('ocr-json-result').textContent = '';
+  document.getElementById('ocr-meta').textContent = '';
 
   try {
     const file = fileInput.files[0];
     const arrayBuf = await file.arrayBuffer();
-    const res = await api('/v1/ocr?model=' + encodeURIComponent(model), {
+    let ocrURL = '/v1/ocr?model=' + encodeURIComponent(model);
+    const ocrParams = [
+      ['box_thresh', 'ocr-box-thresh'],
+      ['rec_thresh', 'ocr-rec-thresh'],
+      ['det_thresh', 'ocr-det-thresh'],
+      ['det_limit_side_len', 'ocr-det-limit'],
+    ];
+    for (const [qname, elId] of ocrParams) {
+      const v = document.getElementById(elId).value.trim();
+      if (v) ocrURL += '&' + qname + '=' + encodeURIComponent(v);
+    }
+    const res = await api(ocrURL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: arrayBuf
@@ -1267,13 +1303,19 @@ async function runOCR() {
     const data = await res.json();
     document.getElementById('ocr-json-result').textContent = JSON.stringify(data, null, 2);
 
-    if (Array.isArray(data) && data.length > 0) {
-      const lines = data.map(item => {
+    const items = data.items || data;
+    const elapsed = data.elapsed_ms;
+    if (elapsed !== undefined) {
+      document.getElementById('ocr-meta').textContent = `耗时: ${elapsed}ms`;
+    }
+
+    if (Array.isArray(items) && items.length > 0) {
+      const lines = items.map(item => {
         const conf = (item.confidence * 100).toFixed(1);
         return `${item.text}  (${conf}%)`;
       });
       document.getElementById('ocr-text-result').textContent = lines.join('\n');
-    } else if (Array.isArray(data) && data.length === 0) {
+    } else if (Array.isArray(items) && items.length === 0) {
       document.getElementById('ocr-text-result').textContent = '(未识别到文字)';
     } else {
       document.getElementById('ocr-text-result').textContent = JSON.stringify(data, null, 2);
@@ -1333,7 +1375,7 @@ const ENDPOINTS = [
   { method: 'POST', path: '/api/binaries/llama-server/download', desc: '下载 llama-server (SSE)', sse: true },
   { method: 'POST', path: '/api/binaries/whisper-server/download', desc: '下载 whisper-server (SSE)', sse: true },
   { method: 'POST', path: '/v1/ocr', desc: 'OCR 文字识别 (图片 body)', params: [
-    { name: 'model', type: 'text', placeholder: 'ppocr-v4-mobile', query: true },
+    { name: 'model', type: 'text', placeholder: 'ppocr-v5-mobile', query: true },
     { name: 'file', type: 'file', body: true }
   ], multipart: false, binary: true },
   { method: 'POST', path: '/v1/audio/transcriptions/faster', desc: 'faster-whisper 语音转写 (multipart)', params: [

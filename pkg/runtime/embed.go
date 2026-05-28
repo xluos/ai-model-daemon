@@ -26,7 +26,8 @@ func (bm *BinaryManager) extractEmbedded() {
 			continue
 		}
 		dest := filepath.Join(bm.binDir, e.binName)
-		if _, err := os.Stat(dest); err == nil {
+		existing, _ := os.ReadFile(dest)
+		if len(existing) == len(data) {
 			continue
 		}
 		os.WriteFile(dest, data, 0755)

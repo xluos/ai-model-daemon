@@ -135,11 +135,6 @@ func (r *OCRRuntime) Start(modelID string, opts OCROpts) error {
 		return fmt.Errorf("model %q not found in manifest", modelID)
 	}
 
-	detPath, recPath, clsPath := resolveOCRModelPaths(m)
-	if detPath == "" || recPath == "" {
-		return fmt.Errorf("model %q: detection or recognition model not ready", modelID)
-	}
-
 	pythonPath, err := findPython()
 	if err != nil {
 		return err
@@ -157,6 +152,11 @@ func (r *OCRRuntime) Start(modelID string, opts OCROpts) error {
 
 	if opts.Lang == "" {
 		opts.Lang = "ch"
+	}
+
+	detPath, recPath, clsPath := resolveOCRModelPaths(m)
+	if detPath == "" || recPath == "" {
+		return fmt.Errorf("model %q: detection or recognition model not ready (download first)", modelID)
 	}
 
 	args := []string{
@@ -180,7 +180,7 @@ func (r *OCRRuntime) Start(modelID string, opts OCROpts) error {
 		Binary:         pythonPath,
 		Args:           args,
 		HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", port),
-		HealthTimeout:  60 * time.Second,
+		HealthTimeout:  120 * time.Second,
 		HealthInterval: 500 * time.Millisecond,
 		StopTimeout:    5 * time.Second,
 	}

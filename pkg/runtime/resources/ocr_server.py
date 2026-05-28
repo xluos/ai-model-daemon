@@ -1,27 +1,94 @@
 """Minimal PaddleOCR HTTP server for ai-model-daemon."""
 import argparse, json, os, sys, tempfile
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--host", default="127.0.0.1")
 parser.add_argument("--port", type=int, required=True)
-parser.add_argument("--det", required=True, help="Detection model directory")
-parser.add_argument("--rec", required=True, help="Recognition model directory")
+parser.add_argument("--det", default="", help="Detection model directory")
+parser.add_argument("--rec", default="", help="Recognition model directory")
 parser.add_argument("--cls", default="", help="Classification model directory")
 parser.add_argument("--lang", default="ch")
 args = parser.parse_args()
 
-from paddleocr import PaddleOCR
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
-ocr = PaddleOCR(
-    det_model_dir=args.det,
-    rec_model_dir=args.rec,
-    cls_model_dir=args.cls or None,
-    use_angle_cls=bool(args.cls),
+import yaml
+from paddleocr import PaddleOCR
+import numpy as np
+
+def read_model_name(model_dir):
+    yml = os.path.join(model_dir, "inference.yml")
+    if os.path.exists(yml):
+        with open(yml) as f:
+            cfg = yaml.safe_load(f)
+        return cfg.get("Global", {}).get("model_name")
+    return None
+
+kwargs = dict(
+    use_doc_orientation_classify=False,
+    use_doc_unwarping=False,
+    use_textline_orientation=bool(args.cls),
     lang=args.lang,
-    show_log=False,
 )
+if args.det:
+    kwargs["text_detection_model_dir"] = args.det
+    name = read_model_name(args.det)
+    if name:
+        kwargs["text_detection_model_name"] = name
+if args.rec:
+    kwargs["text_recognition_model_dir"] = args.rec
+    name = read_model_name(args.rec)
+    if name:
+        kwargs["text_recognition_model_name"] = name
+if args.cls:
+    kwargs["textline_orientation_model_dir"] = args.cls
+
+ocr = PaddleOCR(**kwargs)
 print(f"OCR server ready on {args.host}:{args.port}", flush=True)
+
+PREDICT_FLOAT_PARAMS = {
+    "det_thresh": "text_det_thresh",
+    "box_thresh": "text_det_box_thresh",
+    "unclip_ratio": "text_det_unclip_ratio",
+    "rec_thresh": "text_rec_score_thresh",
+}
+PREDICT_INT_PARAMS = {
+    "det_limit_side_len": "text_det_limit_side_len",
+}
+
+
+def _parse_predict_params(qs):
+    params = {}
+    for qname, pname in PREDICT_FLOAT_PARAMS.items():
+        vals = qs.get(qname)
+        if vals:
+            try:
+                params[pname] = float(vals[0])
+            except ValueError:
+                pass
+    for qname, pname in PREDICT_INT_PARAMS.items():
+        vals = qs.get(qname)
+        if vals:
+            try:
+                params[pname] = int(vals[0])
+            except ValueError:
+                pass
+    return params
+
+
+def _serialize(result):
+    output = []
+    for r in result:
+        texts = r.get("rec_texts", [])
+        scores = r.get("rec_scores", [])
+        polys = r.get("dt_polys", [])
+        for i, text in enumerate(texts):
+            box = polys[i].tolist() if i < len(polys) and hasattr(polys[i], "tolist") else []
+            score = float(scores[i]) if i < len(scores) else 0.0
+            output.append({"box": box, "text": text, "confidence": score})
+    return output
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -30,18 +97,18 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        predict_params = _parse_predict_params(qs)
+
         length = int(self.headers.get("Content-Length", 0))
         data = self.rfile.read(length)
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp.write(data)
         tmp.close()
         try:
-            result = ocr.ocr(tmp.name, cls=bool(args.cls))
-            output = []
-            if result and result[0]:
-                for line in result[0]:
-                    box, (text, confidence) = line
-                    output.append({"box": box, "text": text, "confidence": confidence})
+            result = list(ocr.predict(tmp.name, **predict_params))
+            output = _serialize(result)
             body = json.dumps(output, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

@@ -23,6 +23,8 @@ import (
 	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
+var Version = "dev"
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -30,6 +32,9 @@ func main() {
 	}
 
 	switch os.Args[1] {
+	case "version":
+		fmt.Println(Version)
+		return
 	case "serve":
 		cmdServe()
 	case "status":
@@ -63,16 +68,18 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: ai-model-daemon <command>
 
 Commands:
-  serve [--http addr] Start the daemon (Unix socket + optional TCP)
+  serve [--http addr] [--no-reuse]  Start the daemon (Unix socket + optional TCP)
   status             Print daemon status
   list               List all models (JSON)
   download <id>      Download a model (blocks until complete)
   path <id>          Print model file paths (JSON)
   hardware           Detect and print hardware info (JSON)
   recommend          List models sorted by fit for this machine (JSON)
+  version            Print version
 
 Examples:
-  ai-model-daemon serve --http :9090    # Unix socket + HTTP on port 9090`)
+  ai-model-daemon serve --http :9090              # Unix socket + HTTP on port 9090
+  ai-model-daemon serve --no-reuse --http :9090   # Force new instance`)
 }
 
 func generateToken() string {
@@ -83,15 +90,25 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
-func parseServeFlags() string {
-	var httpAddr string
+type serveFlags struct {
+	httpAddr string
+	noReuse  bool
+}
+
+func parseServeFlags() serveFlags {
+	var f serveFlags
 	for i := 2; i < len(os.Args); i++ {
-		if os.Args[i] == "--http" && i+1 < len(os.Args) {
-			httpAddr = os.Args[i+1]
-			i++
+		switch os.Args[i] {
+		case "--http":
+			if i+1 < len(os.Args) {
+				f.httpAddr = os.Args[i+1]
+				i++
+			}
+		case "--no-reuse":
+			f.noReuse = true
 		}
 	}
-	return httpAddr
+	return f
 }
 
 func isExistingDaemonAlive(pidPath, socketPath string) (int, string, bool) {
@@ -124,6 +141,28 @@ func isExistingDaemonAlive(pidPath, socketPath string) (int, string, bool) {
 }
 
 func probeDaemonSocket(socketPath, token string) bool {
+	resp, err := daemonGet(socketPath, token, "/status")
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
+func probeDaemonVersion(socketPath, token string) string {
+	resp, err := daemonGet(socketPath, token, "/version")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var v struct{ Version string }
+	if json.NewDecoder(resp.Body).Decode(&v) != nil {
+		return ""
+	}
+	return v.Version
+}
+
+func daemonGet(socketPath, token, path string) (*http.Response, error) {
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
@@ -132,21 +171,16 @@ func probeDaemonSocket(socketPath, token string) bool {
 		},
 		Timeout: 3 * time.Second,
 	}
-	req, err := http.NewRequest("GET", "http://daemon/status", nil)
+	req, err := http.NewRequest("GET", "http://daemon"+path, nil)
 	if err != nil {
-		return false
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
-	resp, err := client.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == 200
+	return client.Do(req)
 }
 
 func cmdServe() {
-	httpAddr := parseServeFlags()
+	flags := parseServeFlags()
 
 	if err := storage.EnsureDir(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -158,19 +192,35 @@ func cmdServe() {
 	tokenPath := storage.TokenPath()
 
 	if existPID, existToken, alive := isExistingDaemonAlive(pidPath, socketPath); alive {
-		ready := map[string]interface{}{
-			"socket":   socketPath,
-			"pid":      existPID,
-			"token":    existToken,
-			"reused":   true,
+		canReuse := !flags.noReuse
+		if canReuse {
+			remoteVer := probeDaemonVersion(socketPath, existToken)
+			if remoteVer != "" && remoteVer != Version {
+				fmt.Fprintf(os.Stderr, "existing daemon version %q != current %q, stopping it\n", remoteVer, Version)
+				canReuse = false
+			}
 		}
-		if existHTTP, err := os.ReadFile(storage.HTTPAddrPath()); err == nil {
-			ready["http"] = strings.TrimSpace(string(existHTTP))
+		if canReuse {
+			ready := map[string]interface{}{
+				"socket":  socketPath,
+				"pid":     existPID,
+				"token":   existToken,
+				"version": Version,
+				"reused":  true,
+			}
+			if existHTTP, err := os.ReadFile(storage.HTTPAddrPath()); err == nil {
+				ready["http"] = strings.TrimSpace(string(existHTTP))
+			}
+			readyJSON, _ := json.Marshal(ready)
+			fmt.Println(string(readyJSON))
+			fmt.Fprintf(os.Stderr, "daemon already running (pid %d), reusing\n", existPID)
+			os.Exit(0)
 		}
-		readyJSON, _ := json.Marshal(ready)
-		fmt.Println(string(readyJSON))
-		fmt.Fprintf(os.Stderr, "daemon already running (pid %d), reusing\n", existPID)
-		os.Exit(0)
+		// kill the old daemon before starting
+		if proc, err := os.FindProcess(existPID); err == nil {
+			_ = proc.Signal(syscall.SIGTERM)
+			time.Sleep(500 * time.Millisecond)
+		}
 	}
 
 	pid := os.Getpid()
@@ -179,8 +229,8 @@ func cmdServe() {
 	httpAddrPath := storage.HTTPAddrPath()
 	os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644)
 	os.WriteFile(tokenPath, []byte(token), 0600)
-	if httpAddr != "" {
-		os.WriteFile(httpAddrPath, []byte(httpAddr), 0644)
+	if flags.httpAddr != "" {
+		os.WriteFile(httpAddrPath, []byte(flags.httpAddr), 0644)
 	} else {
 		os.Remove(httpAddrPath)
 	}
@@ -194,7 +244,7 @@ func cmdServe() {
 		os.Exit(0)
 	}
 
-	srv := server.New(token, shutdown)
+	srv := server.New(token, Version, shutdown)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -218,20 +268,21 @@ func cmdServe() {
 	}()
 
 	ready := map[string]interface{}{
-		"socket": socketPath,
-		"pid":    pid,
-		"token":  token,
+		"socket":  socketPath,
+		"pid":     pid,
+		"token":   token,
+		"version": Version,
 	}
-	if httpAddr != "" {
-		ready["http"] = httpAddr
+	if flags.httpAddr != "" {
+		ready["http"] = flags.httpAddr
 	}
 	readyJSON, _ := json.Marshal(ready)
 	fmt.Println(string(readyJSON))
 
-	if httpAddr != "" {
+	if flags.httpAddr != "" {
 		go func() {
-			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", httpAddr)
-			if err := srv.ListenAndServeTCP(httpAddr); err != nil {
+			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", flags.httpAddr)
+			if err := srv.ListenAndServeTCP(flags.httpAddr); err != nil {
 				fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
 			}
 		}()

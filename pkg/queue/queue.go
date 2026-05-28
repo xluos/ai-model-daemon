@@ -57,7 +57,7 @@ type QueueInfo struct {
 }
 
 type Status struct {
-	Queues map[string]QueueInfo `json:"-"`
+	Queues map[string]QueueInfo `json:"queues"`
 
 	// Backward-compatible fields, populated from Queues.
 	LLMQueue     QueueInfo `json:"llmQueue"`

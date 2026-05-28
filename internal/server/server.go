@@ -32,6 +32,7 @@ type Server struct {
 	active      map[string]context.CancelFunc
 	config      download.Config
 	token       string
+	version     string
 
 	rtm        *runtime.RuntimeManager
 	scheduler  *queue.Scheduler
@@ -40,7 +41,7 @@ type Server struct {
 	onShutdown func()
 }
 
-func New(token string, onShutdown func()) *Server {
+func New(token string, version string, onShutdown func()) *Server {
 	rtm := runtime.NewRuntimeManager()
 	sched := queue.NewScheduler(rtm, queue.DefaultConfig())
 	p := proxy.New(sched, rtm)
@@ -49,6 +50,7 @@ func New(token string, onShutdown func()) *Server {
 		mux:        http.NewServeMux(),
 		active:     make(map[string]context.CancelFunc),
 		token:      token,
+		version:    version,
 		rtm:        rtm,
 		scheduler:  sched,
 		proxy:      p,
@@ -63,6 +65,7 @@ func New(token string, onShutdown func()) *Server {
 	s.mux.HandleFunc("POST /models/{id}/cancel-download", s.handleCancelDownload)
 	s.mux.HandleFunc("GET /models/{id}/path", s.handleModelPath)
 	s.mux.HandleFunc("DELETE /models/{id}", s.handleDeleteModel)
+	s.mux.HandleFunc("GET /version", s.handleVersion)
 	s.mux.HandleFunc("GET /status", s.handleStatus)
 	s.mux.HandleFunc("POST /config", s.handleConfig)
 	s.mux.HandleFunc("GET /hardware", s.handleHardware)
@@ -451,9 +454,14 @@ func (s *Server) handleDeleteModel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"version": s.version})
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"pid":     os.Getpid(),
+		"version": s.version,
 		"storage": storage.Dir(),
 		"socket":  storage.SocketPath(),
 		"ready":   true,

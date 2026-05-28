@@ -283,28 +283,35 @@ var Registry = []Model{
 		Quantizations:       []Quantization{{Key: "ud_q4_k_xl", Label: "UD-Q4_K_XL", Repo: "unsloth/Qwen3.6-35B-A3B-GGUF", LLMFile: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", MmprojFile: "mmproj-F16.gguf", SizeBytes: 21 * 1024 * 1024 * 1024}},
 	},
 
-	// --- PaddleOCR models ---
+	// --- PaddleOCR v5 models ---
 	{
-		ID:          "ppocr-v4-mobile",
-		Name:        "PP-OCRv4 Mobile",
-		Desc:        "Chinese OCR pipeline (det+rec+cls), fast and lightweight",
+		ID:          "ppocr-v5-server",
+		Name:        "PP-OCRv5 Server",
+		Desc:        "Chinese OCR pipeline (det+rec), highest accuracy",
 		RuntimeKind: "ocr",
 		Files: []ModelFile{
-			{Role: "det", Filename: "ch_PP-OCRv4_det_infer.tar", Bytes: 5_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar"}},
-			{Role: "rec", Filename: "ch_PP-OCRv4_rec_infer.tar", Bytes: 11_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar"}},
-			{Role: "cls", Filename: "ch_ppocr_mobile_v2.0_cls_infer.tar", Bytes: 2_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar"}},
+			{Role: "det", Filename: "PP-OCRv5_server_det_infer.tar", Bytes: 88_340_480, URLs: []string{
+				"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_det_infer.tar",
+			}},
+			{Role: "rec", Filename: "PP-OCRv5_server_rec_infer.tar", Bytes: 84_869_120, URLs: []string{
+				"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_rec_infer.tar",
+			}},
 		},
 		Apps:    []string{"clipiq"},
 		Enables: []string{"ocr"},
 	},
 	{
-		ID:          "ppocr-v4-server",
-		Name:        "PP-OCRv4 Server",
-		Desc:        "Chinese OCR pipeline (det+rec), highest accuracy",
+		ID:          "ppocr-v5-mobile",
+		Name:        "PP-OCRv5 Mobile",
+		Desc:        "Chinese OCR pipeline (det+rec), fast and lightweight",
 		RuntimeKind: "ocr",
 		Files: []ModelFile{
-			{Role: "det", Filename: "ch_PP-OCRv4_det_server_infer.tar", Bytes: 115_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_server_infer.tar"}},
-			{Role: "rec", Filename: "ch_PP-OCRv4_rec_server_infer.tar", Bytes: 90_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_server_infer.tar"}},
+			{Role: "det", Filename: "PP-OCRv5_mobile_det_infer.tar", Bytes: 4_935_680, URLs: []string{
+				"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_infer.tar",
+			}},
+			{Role: "rec", Filename: "PP-OCRv5_mobile_rec_infer.tar", Bytes: 16_834_560, URLs: []string{
+				"https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_infer.tar",
+			}},
 		},
 		Apps:    []string{"clipiq"},
 		Enables: []string{"ocr"},

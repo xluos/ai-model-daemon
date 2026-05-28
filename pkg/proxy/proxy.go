@@ -307,7 +307,7 @@ func forwardMultipart(w http.ResponseWriter, r *http.Request, targetBase string,
 func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
 	modelID := r.URL.Query().Get("model")
 	if modelID == "" {
-		modelID = "ppocr-v4-mobile"
+		modelID = "ppocr-v5-mobile"
 	}
 	modelID = resolveModelID(modelID)
 	m := manifest.Find(modelID)
@@ -328,13 +328,20 @@ func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ocrQuery := make(url.Values)
+	for _, k := range []string{"det_thresh", "box_thresh", "unclip_ratio", "rec_thresh", "det_limit_side_len"} {
+		if v := r.URL.Query().Get(k); v != "" {
+			ocrQuery.Set(k, v)
+		}
+	}
+
 	if err := p.scheduler.HTTPHandler("ocr", modelID, clientID, queue.PriorityNormal, w, r, func() {
 		target := p.scheduler.ProxyTarget("ocr")
 		if target == "" {
 			writeError(w, http.StatusServiceUnavailable, "OCR runtime not ready")
 			return
 		}
-		proxyOCR(w, r, target, body)
+		proxyOCR(w, r, target, body, ocrQuery)
 	}); err != nil {
 		writeError(w, http.StatusServiceUnavailable, err.Error())
 	}
@@ -384,26 +391,51 @@ func (p *Proxy) HandleFasterWhisperTranscriptions(w http.ResponseWriter, r *http
 	}
 }
 
-func proxyOCR(w http.ResponseWriter, r *http.Request, targetBase string, body []byte) {
+func proxyOCR(w http.ResponseWriter, r *http.Request, targetBase string, body []byte, params url.Values) {
 	targetURL, err := url.Parse(targetBase)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "invalid proxy target")
 		return
 	}
 
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = targetURL.Scheme
-			req.URL.Host = targetURL.Host
-			req.URL.Path = "/ocr"
-			req.Host = targetURL.Host
-			req.Body = io.NopCloser(bytes.NewReader(body))
-			req.ContentLength = int64(len(body))
-		},
-		FlushInterval: -1,
+	reqURL := targetURL.String() + "/ocr"
+	if len(params) > 0 {
+		reqURL += "?" + params.Encode()
 	}
 
-	proxy.ServeHTTP(w, r)
+	start := time.Now()
+	ocrReq, err := http.NewRequest("POST", reqURL, bytes.NewReader(body))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "create request: "+err.Error())
+		return
+	}
+	ocrReq.ContentLength = int64(len(body))
+
+	resp, err := http.DefaultClient.Do(ocrReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "ocr backend: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	elapsed := time.Since(start).Milliseconds()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	var result json.RawMessage
+	if json.Unmarshal(respBody, &result) == nil {
+		wrapped := struct {
+			Items    json.RawMessage `json:"items"`
+			ElapsedMS int64          `json:"elapsed_ms"`
+		}{Items: result, ElapsedMS: elapsed}
+		out, _ := json.Marshal(wrapped)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(out)
+	} else {
+		w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+		w.WriteHeader(resp.StatusCode)
+		w.Write(respBody)
+	}
 }
 
 func isModelReady(m *manifest.Model) bool {
