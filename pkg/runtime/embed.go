@@ -16,6 +16,7 @@ func (bm *BinaryManager) extractEmbedded() {
 	}{
 		{"resources/whisper-server", "whisper-server"},
 		{"resources/ocr_server.py", "ocr_server.py"},
+		{"resources/rapidocr_server.py", "rapidocr_server.py"},
 		{"resources/faster_whisper_server.py", "faster_whisper_server.py"},
 	}
 

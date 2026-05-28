@@ -348,6 +348,12 @@ textarea{resize:vertical;min-height:60px}
             <label style="font-size:12px;color:var(--text2)">检测长边限制
               <input type="number" id="ocr-det-limit" value="" min="320" step="32" placeholder="960" style="margin-top:2px">
             </label>
+            <label style="font-size:12px;color:var(--text2)">输入长边缩放
+              <input type="number" id="ocr-max-side" value="1280" min="320" step="32" placeholder="1280" style="margin-top:2px">
+            </label>
+            <label style="font-size:12px;color:var(--text2);display:flex;gap:6px;align-items:center;margin-top:20px">
+              <input type="checkbox" id="ocr-use-cls" style="width:auto">方向分类
+            </label>
           </div>
         </details>
       </div>
@@ -509,11 +515,13 @@ async function loadDashboard() {
     </dl>`;
 
     const ocr = r['ocr'] || { state:'idle', inFlight:0 };
+    const rapid = r['rapidocr'] || { state:'idle', inFlight:0 };
     document.getElementById('dash-ocr').innerHTML = `<h3>OCR 运行时</h3><dl class="kv">
-      <dt>状态</dt><dd>${stateBadge(ocr.state)}</dd>
-      <dt>当前模型</dt><dd>${ocr.modelId || '—'}</dd>
-      <dt>端口</dt><dd>${ocr.port || '—'}</dd>
-      <dt>进行中请求</dt><dd>${ocr.inFlight}</dd>
+      <dt>RapidOCR</dt><dd>${stateBadge(rapid.state)}</dd>
+      <dt>RapidOCR 模型</dt><dd>${rapid.modelId || '—'}</dd>
+      <dt>PaddleOCR</dt><dd>${stateBadge(ocr.state)}</dd>
+      <dt>PaddleOCR 模型</dt><dd>${ocr.modelId || '—'}</dd>
+      <dt>进行中请求</dt><dd>${(rapid.inFlight || 0) + (ocr.inFlight || 0)}</dd>
     </dl>`;
 
     const b = r.binaries;
@@ -530,7 +538,7 @@ async function loadDashboard() {
   if (q.ok) {
     const qs = q.data;
     const queues = qs.queues || {};
-    const kindLabel = { llm:'LLM', whisper:'Whisper', 'faster-whisper':'faster-whisper', ocr:'OCR' };
+    const kindLabel = { llm:'LLM', whisper:'Whisper', 'faster-whisper':'faster-whisper', ocr:'PaddleOCR', rapidocr:'RapidOCR' };
     let kvHTML = '';
     for (const [kind, info] of Object.entries(queues)) {
       const label = kindLabel[kind] || kind;
@@ -545,6 +553,20 @@ async function loadDashboard() {
 
 // --- 模型管理 ---
 let allModels = [];
+let ocrModelRuntime = {};
+function isOCRModel(m) {
+  return (m.enables || []).includes('ocr') || m.runtimeKind === 'ocr' || m.runtimeKind === 'rapidocr';
+}
+function ocrModelRank(m) {
+  const id = m.id || '';
+  if (m.runtimeKind === 'rapidocr' || id.startsWith('rapidocr')) return 0;
+  if (id.includes('mobile')) return 1;
+  if (id.includes('server')) return 2;
+  return 3;
+}
+function runtimeKindForModel(modelId) {
+  return ocrModelRuntime[modelId] || (modelId.startsWith('rapidocr') ? 'rapidocr' : 'ocr');
+}
 async function loadModels() {
   const [rec, plain] = await Promise.all([
     apiJSON('/models/recommended'),
@@ -573,8 +595,8 @@ function renderModels() {
     if (!filter) return true;
     if (filter === 'whisper') return m.id.startsWith('whisper-') && !m.id.startsWith('faster-whisper');
     if (filter === 'faster-whisper') return m.id.startsWith('faster-whisper');
-    if (filter === 'ocr') return m.id.startsWith('ppocr');
-    if (filter === 'llm') return !m.id.startsWith('whisper') && !m.id.startsWith('faster-whisper') && !m.id.startsWith('ppocr') && !onnxIds.includes(m.id);
+    if (filter === 'ocr') return isOCRModel(m);
+    if (filter === 'llm') return !m.id.startsWith('whisper') && !m.id.startsWith('faster-whisper') && !isOCRModel(m) && !onnxIds.includes(m.id);
     return onnxIds.includes(m.id);
   });
   tbody.innerHTML = filtered.map(m => {
@@ -699,10 +721,12 @@ async function loadRuntime() {
   </table>`;
 
   const onnxIds = ['yunet','dinov2-small','nima','insightface','insightface-w600k-r50'];
-  const llmModels = models.filter(m => m.ready && !onnxIds.includes(m.id) && !m.id.startsWith('whisper') && !m.id.startsWith('faster-whisper') && !m.id.startsWith('ppocr'));
+  const llmModels = models.filter(m => m.ready && !onnxIds.includes(m.id) && !m.id.startsWith('whisper') && !m.id.startsWith('faster-whisper') && !isOCRModel(m));
   const whisperModels = models.filter(m => m.ready && m.id.startsWith('whisper-') && !m.id.startsWith('faster-whisper'));
   const fwModels = models.filter(m => m.ready && m.id.startsWith('faster-whisper'));
-  const ocrModels = models.filter(m => m.ready && m.id.startsWith('ppocr'));
+  const ocrModels = models
+    .filter(m => m.ready && isOCRModel(m))
+    .sort((a, b) => ocrModelRank(a) - ocrModelRank(b) || a.id.localeCompare(b.id));
 
   const llmSel = document.getElementById('rt-llm-model');
   llmSel.innerHTML = llmModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
@@ -723,12 +747,15 @@ async function loadRuntime() {
 
   // OCR
   const ocrRt = rt['ocr'] || { state:'idle', inFlight:0 };
+  const rapidRt = rt['rapidocr'] || { state:'idle', inFlight:0 };
   document.getElementById('rt-ocr-info').innerHTML = `<dl class="kv">
-    <dt>状态</dt><dd>${stateBadge(ocrRt.state)}</dd>
-    <dt>当前模型</dt><dd>${ocrRt.modelId || '—'}</dd>
-    <dt>端口</dt><dd>${ocrRt.port || '—'}</dd>
-    <dt>进行中请求</dt><dd>${ocrRt.inFlight}</dd>
+    <dt>RapidOCR 状态</dt><dd>${stateBadge(rapidRt.state)}</dd>
+    <dt>RapidOCR 模型</dt><dd>${rapidRt.modelId || '—'}</dd>
+    <dt>PaddleOCR 状态</dt><dd>${stateBadge(ocrRt.state)}</dd>
+    <dt>PaddleOCR 模型</dt><dd>${ocrRt.modelId || '—'}</dd>
+    <dt>进行中请求</dt><dd>${(rapidRt.inFlight || 0) + (ocrRt.inFlight || 0)}</dd>
     ${ocrRt.error ? `<dt>错误</dt><dd style="color:var(--red)">${ocrRt.error}</dd>` : ''}
+    ${rapidRt.error ? `<dt>RapidOCR 错误</dt><dd style="color:var(--red)">${rapidRt.error}</dd>` : ''}
   </dl>`;
   const ocrSel = document.getElementById('rt-ocr-model');
   ocrSel.innerHTML = ocrModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
@@ -835,20 +862,23 @@ async function showFWLogs() {
 async function startOCR() {
   const modelId = document.getElementById('rt-ocr-model').value;
   if (!modelId) { toast('请先选择模型'); return; }
+  const kind = runtimeKindForModel(modelId);
   toast('正在启动 OCR: ' + modelId);
-  const { data } = await apiPost('/api/runtime/ocr/start', { modelId });
+  const { data } = await apiPost('/api/runtime/' + kind + '/start', { modelId });
   if (data.error) toast('错误: ' + data.error); else toast('OCR 已启动');
   loadRuntime();
 }
 async function stopOCR() {
-  await apiPost('/api/runtime/ocr/stop', {});
+  const modelId = document.getElementById('rt-ocr-model').value;
+  await apiPost('/api/runtime/' + runtimeKindForModel(modelId) + '/stop', {});
   toast('OCR 已停止'); loadRuntime();
 }
 async function showOCRLogs() {
   const box = document.getElementById('rt-ocr-logs');
   box.style.display = box.style.display === 'none' ? 'block' : 'none';
   if (box.style.display === 'block') {
-    const { data } = await apiJSON('/api/runtime/ocr/logs');
+    const modelId = document.getElementById('rt-ocr-model').value;
+    const { data } = await apiJSON('/api/runtime/' + runtimeKindForModel(modelId) + '/logs');
     box.textContent = (data.logs || []).join('\n') || '(暂无日志)';
   }
 }
@@ -860,7 +890,7 @@ async function loadQueue() {
   const qs = res.data;
 
   const queues = qs.queues || {};
-  const kindLabel = { llm:'LLM', whisper:'Whisper', 'faster-whisper':'faster-whisper', ocr:'OCR' };
+  const kindLabel = { llm:'LLM', whisper:'Whisper', 'faster-whisper':'faster-whisper', ocr:'PaddleOCR', rapidocr:'RapidOCR' };
   let kvHTML = '';
   for (const [kind, info] of Object.entries(queues)) {
     const label = kindLabel[kind] || kind;
@@ -1203,7 +1233,11 @@ async function loadOCRModels() {
   if (!ok) return;
   const sel = document.getElementById('ocr-model-sel');
   sel.innerHTML = '';
-  (data || []).filter(m => m.id && m.id.startsWith('ppocr') && m.ready).forEach(m => {
+  ocrModelRuntime = {};
+  (data || []).filter(m => m.id && isOCRModel(m) && m.ready).sort((a, b) => {
+    return ocrModelRank(a) - ocrModelRank(b) || a.id.localeCompare(b.id);
+  }).forEach(m => {
+    ocrModelRuntime[m.id] = m.runtimeKind || (m.id.startsWith('rapidocr') ? 'rapidocr' : 'ocr');
     const opt = document.createElement('option');
     opt.value = m.id;
     opt.textContent = m.name || m.id;
@@ -1222,7 +1256,8 @@ async function refreshOCRStatus() {
   const { ok, data } = await apiJSON('/api/runtime/status');
   const badge = document.getElementById('ocr-status-badge');
   if (!ok) { badge.innerHTML = ''; return; }
-  const ocr = data['ocr'] || {};
+  const selected = document.getElementById('ocr-model-sel').value || 'rapidocr-ppocr-v5-mobile';
+  const ocr = data[runtimeKindForModel(selected)] || {};
   const stateMap = { idle:['空闲','gray'], starting:['启动中','yellow'], ready:['就绪','green'], stopping:['停止中','yellow'], error:['错误','red'] };
   const [label, cls] = stateMap[ocr.state] || [ocr.state||'idle','gray'];
   let html = `<span class="badge ${cls}">${label}</span>`;
@@ -1234,7 +1269,7 @@ async function startOCRRuntime() {
   const model = document.getElementById('ocr-model-sel').value;
   if (!model) { toast('请先选择 OCR 模型'); return; }
   toast('正在启动 OCR 运行时...');
-  const { ok, data } = await apiPost('/api/runtime/ocr/start', { modelId: model });
+  const { ok, data } = await apiPost('/api/runtime/' + runtimeKindForModel(model) + '/start', { modelId: model });
   if (!ok) { toast('启动失败: ' + JSON.stringify(data)); return; }
   toast('OCR 运行时已启动');
   refreshOCRStatus();
@@ -1283,10 +1318,14 @@ async function runOCR() {
       ['rec_thresh', 'ocr-rec-thresh'],
       ['det_thresh', 'ocr-det-thresh'],
       ['det_limit_side_len', 'ocr-det-limit'],
+      ['max_side', 'ocr-max-side'],
     ];
     for (const [qname, elId] of ocrParams) {
       const v = document.getElementById(elId).value.trim();
       if (v) ocrURL += '&' + qname + '=' + encodeURIComponent(v);
+    }
+    if (document.getElementById('ocr-use-cls').checked) {
+      ocrURL += '&use_cls=true';
     }
     const res = await api(ocrURL, {
       method: 'POST',
@@ -1375,7 +1414,14 @@ const ENDPOINTS = [
   { method: 'POST', path: '/api/binaries/llama-server/download', desc: '下载 llama-server (SSE)', sse: true },
   { method: 'POST', path: '/api/binaries/whisper-server/download', desc: '下载 whisper-server (SSE)', sse: true },
   { method: 'POST', path: '/v1/ocr', desc: 'OCR 文字识别 (图片 body)', params: [
-    { name: 'model', type: 'text', placeholder: 'ppocr-v5-mobile', query: true },
+    { name: 'model', type: 'text', placeholder: 'rapidocr-ppocr-v5-mobile', query: true },
+    { name: 'max_side', type: 'number', placeholder: '1280', query: true },
+    { name: 'det_limit_side_len', type: 'number', placeholder: '960', query: true },
+    { name: 'det_thresh', type: 'number', placeholder: '0.3', query: true },
+    { name: 'box_thresh', type: 'number', placeholder: '0.5', query: true },
+    { name: 'unclip_ratio', type: 'number', placeholder: '1.6', query: true },
+    { name: 'rec_thresh', type: 'number', placeholder: '0.5', query: true },
+    { name: 'use_cls', type: 'checkbox', query: true },
     { name: 'file', type: 'file', body: true }
   ], multipart: false, binary: true },
   { method: 'POST', path: '/v1/audio/transcriptions/faster', desc: 'faster-whisper 语音转写 (multipart)', params: [
@@ -1390,8 +1436,13 @@ const ENDPOINTS = [
   { method: 'POST', path: '/api/runtime/ocr/start', desc: '启动 OCR 运行时', params: [
     { name: 'modelId', type: 'text', placeholder: '模型 ID', body: true }
   ]},
+  { method: 'POST', path: '/api/runtime/rapidocr/start', desc: '启动 RapidOCR 运行时', params: [
+    { name: 'modelId', type: 'text', placeholder: 'rapidocr-ppocr-v5-mobile', body: true }
+  ]},
   { method: 'POST', path: '/api/runtime/ocr/stop', desc: '停止 OCR 运行时' },
+  { method: 'POST', path: '/api/runtime/rapidocr/stop', desc: '停止 RapidOCR 运行时' },
   { method: 'GET', path: '/api/runtime/ocr/logs', desc: 'OCR 进程日志' },
+  { method: 'GET', path: '/api/runtime/rapidocr/logs', desc: 'RapidOCR 进程日志' },
 ];
 
 function buildAPIExplorer() {

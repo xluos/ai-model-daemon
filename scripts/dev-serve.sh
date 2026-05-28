@@ -5,8 +5,9 @@ set -euo pipefail
 
 VENV_DIR="$HOME/.ai-model-daemon-venv"
 PYTHON_BIN="python3.12"
-STAMP="$VENV_DIR/.deps-installed"
-REQUIRED_PKGS=(paddleocr paddlepaddle faster-whisper)
+REQUIRED_PKGS=(paddleocr paddlepaddle faster-whisper rapidocr onnxruntime)
+DEPS_FILE="$VENV_DIR/.deps-installed"
+DEPS_LOCK="$VENV_DIR/.deps-required"
 
 # --- 找 Python 3.12 ---
 if ! command -v "$PYTHON_BIN" &>/dev/null; then
@@ -18,15 +19,23 @@ if ! command -v "$PYTHON_BIN" &>/dev/null; then
   fi
 fi
 
-# --- 创建虚拟环境 + 安装依赖（仅首次） ---
-if [ ! -f "$STAMP" ]; then
-  if [ ! -d "$VENV_DIR" ]; then
-    echo "📦 创建虚拟环境: $VENV_DIR"
-    "$PYTHON_BIN" -m venv "$VENV_DIR"
-  fi
-  echo "📦 安装依赖: ${REQUIRED_PKGS[*]}"
+# --- 创建虚拟环境 + 安装依赖（依赖列表变化时自动补装） ---
+if [ ! -d "$VENV_DIR" ]; then
+  echo "📦 创建虚拟环境: $VENV_DIR"
+  "$PYTHON_BIN" -m venv "$VENV_DIR"
+fi
+
+required_deps="$(printf '%s\n' "${REQUIRED_PKGS[@]}")"
+installed_deps=""
+if [ -f "$DEPS_LOCK" ]; then
+  installed_deps="$(cat "$DEPS_LOCK")"
+fi
+
+if [ "$required_deps" != "$installed_deps" ]; then
+  echo "📦 安装/更新依赖: ${REQUIRED_PKGS[*]}"
   "$VENV_DIR/bin/pip" install "${REQUIRED_PKGS[@]}"
-  date > "$STAMP"
+  printf '%s\n' "${REQUIRED_PKGS[@]}" > "$DEPS_LOCK"
+  date > "$DEPS_FILE"
 fi
 
 # --- 启动 daemon ---

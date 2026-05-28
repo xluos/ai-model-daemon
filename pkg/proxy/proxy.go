@@ -103,7 +103,7 @@ func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
-		hasRunnable := len(m.Quantizations) > 0 || m.RuntimeKind == "whisper" || m.RuntimeKind == "faster-whisper" || m.RuntimeKind == "ocr"
+		hasRunnable := len(m.Quantizations) > 0 || m.RuntimeKind == "whisper" || m.RuntimeKind == "faster-whisper" || m.RuntimeKind == "ocr" || m.RuntimeKind == "rapidocr"
 		if !hasRunnable {
 			continue
 		}
@@ -307,7 +307,7 @@ func forwardMultipart(w http.ResponseWriter, r *http.Request, targetBase string,
 func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
 	modelID := r.URL.Query().Get("model")
 	if modelID == "" {
-		modelID = "ppocr-v5-mobile"
+		modelID = "rapidocr-ppocr-v5-mobile"
 	}
 	modelID = resolveModelID(modelID)
 	m := manifest.Find(modelID)
@@ -317,6 +317,11 @@ func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isModelReady(m) {
 		writeError(w, http.StatusPreconditionFailed, fmt.Sprintf("model %q is not downloaded", modelID))
+		return
+	}
+	kind, err := p.rtm.ValidateKind(m.RuntimeKind)
+	if err != nil || (kind != "ocr" && kind != "rapidocr") {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not an OCR model", modelID))
 		return
 	}
 
@@ -329,14 +334,19 @@ func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ocrQuery := make(url.Values)
-	for _, k := range []string{"det_thresh", "box_thresh", "unclip_ratio", "rec_thresh", "det_limit_side_len"} {
+	for _, k := range []string{
+		"det_thresh", "box_thresh", "unclip_ratio", "rec_thresh", "text_score",
+		"det_limit_side_len", "det_limit_type", "max_side", "resize_long_side",
+		"use_det", "use_cls", "use_rec", "return_word_box", "return_single_char_box",
+		"min_height", "max_side_len", "min_side_len",
+	} {
 		if v := r.URL.Query().Get(k); v != "" {
 			ocrQuery.Set(k, v)
 		}
 	}
 
-	if err := p.scheduler.HTTPHandler("ocr", modelID, clientID, queue.PriorityNormal, w, r, func() {
-		target := p.scheduler.ProxyTarget("ocr")
+	if err := p.scheduler.HTTPHandler(kind, modelID, clientID, queue.PriorityNormal, w, r, func() {
+		target := p.scheduler.ProxyTarget(kind)
 		if target == "" {
 			writeError(w, http.StatusServiceUnavailable, "OCR runtime not ready")
 			return
@@ -424,8 +434,8 @@ func proxyOCR(w http.ResponseWriter, r *http.Request, targetBase string, body []
 	var result json.RawMessage
 	if json.Unmarshal(respBody, &result) == nil {
 		wrapped := struct {
-			Items    json.RawMessage `json:"items"`
-			ElapsedMS int64          `json:"elapsed_ms"`
+			Items     json.RawMessage `json:"items"`
+			ElapsedMS int64           `json:"elapsed_ms"`
 		}{Items: result, ElapsedMS: elapsed}
 		out, _ := json.Marshal(wrapped)
 		w.Header().Set("Content-Type", "application/json")

@@ -18,6 +18,11 @@ import yaml
 from paddleocr import PaddleOCR
 import numpy as np
 
+try:
+    import cv2
+except Exception:
+    cv2 = None
+
 def read_model_name(model_dir):
     yml = os.path.join(model_dir, "inference.yml")
     if os.path.exists(yml):
@@ -57,6 +62,7 @@ PREDICT_FLOAT_PARAMS = {
 PREDICT_INT_PARAMS = {
     "det_limit_side_len": "text_det_limit_side_len",
 }
+INPUT_INT_PARAMS = ("max_side", "resize_long_side")
 
 
 def _parse_predict_params(qs):
@@ -76,6 +82,46 @@ def _parse_predict_params(qs):
             except ValueError:
                 pass
     return params
+
+
+def _parse_max_side(qs):
+    for qname in INPUT_INT_PARAMS:
+        vals = qs.get(qname)
+        if not vals:
+            continue
+        try:
+            value = int(vals[0])
+        except ValueError:
+            continue
+        if value > 0:
+            return value
+    return 0
+
+
+def _prepare_image(data, max_side):
+    if not max_side or cv2 is None:
+        return data
+
+    arr = np.frombuffer(data, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        return data
+
+    h, w = img.shape[:2]
+    longest = max(h, w)
+    if longest <= max_side:
+        return data
+
+    scale = max_side / float(longest)
+    resized = cv2.resize(
+        img,
+        (max(1, int(round(w * scale))), max(1, int(round(h * scale)))),
+        interpolation=cv2.INTER_AREA,
+    )
+    ok, encoded = cv2.imencode(".png", resized)
+    if not ok:
+        return data
+    return encoded.tobytes()
 
 
 def _serialize(result):
@@ -100,9 +146,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
         predict_params = _parse_predict_params(qs)
+        max_side = _parse_max_side(qs)
 
         length = int(self.headers.get("Content-Length", 0))
         data = self.rfile.read(length)
+        data = _prepare_image(data, max_side)
         tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
         tmp.write(data)
         tmp.close()

@@ -21,6 +21,7 @@ func NewRuntimeManager() *RuntimeManager {
 	rm.Register(NewLLMRuntime(binMgr))
 	rm.Register(NewWhisperRuntime(binMgr))
 	rm.Register(NewOCRRuntime(binMgr.BinDir()))
+	rm.Register(NewRapidOCRRuntime(binMgr.BinDir()))
 	rm.Register(NewFasterWhisperRuntime(binMgr.BinDir()))
 	return rm
 }

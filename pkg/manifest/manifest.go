@@ -10,12 +10,12 @@ type ModelFile struct {
 
 // Quantization describes a quantization variant of a model.
 type Quantization struct {
-	Key       string `json:"key"`
-	Label     string `json:"label"`
-	Repo      string `json:"repo"`
-	LLMFile   string `json:"llmFile"`
+	Key        string `json:"key"`
+	Label      string `json:"label"`
+	Repo       string `json:"repo"`
+	LLMFile    string `json:"llmFile"`
 	MmprojFile string `json:"mmprojFile,omitempty"`
-	SizeBytes int64  `json:"sizeBytes"`
+	SizeBytes  int64  `json:"sizeBytes"`
 }
 
 // Model describes a known AI model that can be shared across apps.
@@ -315,6 +315,24 @@ var Registry = []Model{
 		},
 		Apps:    []string{"clipiq"},
 		Enables: []string{"ocr"},
+	},
+	{
+		ID:          "rapidocr-ppocr-v5-mobile",
+		Name:        "RapidOCR PP-OCRv5 Mobile",
+		Desc:        "Chinese OCR pipeline via RapidOCR + ONNXRuntime, optimized for CPU UI OCR",
+		RuntimeKind: "rapidocr",
+		Bundled:     true,
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"ocr"},
+	},
+	{
+		ID:          "rapidocr-ppocr-v5-server",
+		Name:        "RapidOCR PP-OCRv5 Server",
+		Desc:        "Chinese OCR pipeline via RapidOCR + ONNXRuntime, higher accuracy and slower than mobile",
+		RuntimeKind: "rapidocr",
+		Bundled:     true,
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"ocr"},
 	},
 
 	// --- faster-whisper ASR models ---

@@ -213,6 +213,7 @@ type modelStatus struct {
 	Enables     []string     `json:"enables"`
 	Apps        []string     `json:"apps"`
 	Bundled     bool         `json:"bundled"`
+	RuntimeKind string       `json:"runtimeKind,omitempty"`
 	Ready       bool         `json:"ready"`
 	Downloading bool         `json:"downloading"`
 }
@@ -252,6 +253,7 @@ func (s *Server) getModelStatus(m *manifest.Model) modelStatus {
 		Enables:     m.Enables,
 		Apps:        m.Apps,
 		Bundled:     m.Bundled,
+		RuntimeKind: m.RuntimeKind,
 		Ready:       allReady,
 		Downloading: downloading,
 	}
@@ -490,23 +492,23 @@ func (s *Server) handleHardware(w http.ResponseWriter, r *http.Request) {
 }
 
 type recommendedModel struct {
-	ID                  string                `json:"id"`
-	Name                string                `json:"name"`
-	Desc                string                `json:"desc"`
-	Family              string                `json:"family,omitempty"`
-	Params              string                `json:"params,omitempty"`
-	PrimaryCapabilities []string              `json:"primaryCapabilities,omitempty"`
-	SecondaryTags       []string              `json:"secondaryTags,omitempty"`
-	ContextSize         int                   `json:"contextSize,omitempty"`
-	NativeContextSize   int                   `json:"nativeContextSize,omitempty"`
+	ID                  string                  `json:"id"`
+	Name                string                  `json:"name"`
+	Desc                string                  `json:"desc"`
+	Family              string                  `json:"family,omitempty"`
+	Params              string                  `json:"params,omitempty"`
+	PrimaryCapabilities []string                `json:"primaryCapabilities,omitempty"`
+	SecondaryTags       []string                `json:"secondaryTags,omitempty"`
+	ContextSize         int                     `json:"contextSize,omitempty"`
+	NativeContextSize   int                     `json:"nativeContextSize,omitempty"`
 	Quantizations       []manifest.Quantization `json:"quantizations,omitempty"`
-	IsThinking          bool                  `json:"isThinking,omitempty"`
-	Available           *bool                 `json:"available,omitempty"`
-	Fit                 fit.FitLevel          `json:"fit"`
-	MemPercent          int                   `json:"memPercent"`
-	TPS                 int                   `json:"tps"`
-	Ready               bool                  `json:"ready"`
-	Downloading         bool                  `json:"downloading"`
+	IsThinking          bool                    `json:"isThinking,omitempty"`
+	Available           *bool                   `json:"available,omitempty"`
+	Fit                 fit.FitLevel            `json:"fit"`
+	MemPercent          int                     `json:"memPercent"`
+	TPS                 int                     `json:"tps"`
+	Ready               bool                    `json:"ready"`
+	Downloading         bool                    `json:"downloading"`
 }
 
 // handleRecommended returns models annotated with fit info, sorted by fit level.
@@ -715,10 +717,10 @@ func (s *Server) handleQueueStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleQueueConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		MaxQueueSize         *int    `json:"maxQueueSize,omitempty"`
-		MaxWaitTimeSec       *int    `json:"maxWaitTimeSec,omitempty"`
-		IdleTimeoutSec       *int    `json:"idleTimeoutSec,omitempty"`
-		MaxBatchBeforeSwitch *int    `json:"maxBatchBeforeSwitch,omitempty"`
+		MaxQueueSize         *int `json:"maxQueueSize,omitempty"`
+		MaxWaitTimeSec       *int `json:"maxWaitTimeSec,omitempty"`
+		IdleTimeoutSec       *int `json:"idleTimeoutSec,omitempty"`
+		MaxBatchBeforeSwitch *int `json:"maxBatchBeforeSwitch,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
