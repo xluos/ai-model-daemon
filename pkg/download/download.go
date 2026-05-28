@@ -14,6 +14,7 @@ import (
 type Progress struct {
 	ModelID  string `json:"modelId"`
 	FileRole string `json:"fileRole,omitempty"`
+	Status   string `json:"status,omitempty"`
 	Done     int64  `json:"done"`
 	Total    int64  `json:"total"`
 	Pct      int    `json:"pct"`

@@ -28,6 +28,9 @@ type Model struct {
 	Apps    []string    `json:"apps"`
 	Bundled bool        `json:"bundled"`
 
+	// RuntimeKind declares which inference backend to use: "llm" (default), "whisper", or "" (no inference).
+	RuntimeKind string `json:"runtimeKind,omitempty"`
+
 	// Fields for fit calculation (GGUF models only).
 	Family              string         `json:"family,omitempty"`
 	Params              string         `json:"params,omitempty"`
@@ -278,6 +281,53 @@ var Registry = []Model{
 		NativeContextSize:   262144,
 		ContextSize:         65536,
 		Quantizations:       []Quantization{{Key: "ud_q4_k_xl", Label: "UD-Q4_K_XL", Repo: "unsloth/Qwen3.6-35B-A3B-GGUF", LLMFile: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", MmprojFile: "mmproj-F16.gguf", SizeBytes: 21 * 1024 * 1024 * 1024}},
+	},
+
+	// --- Whisper ASR models ---
+	{
+		ID:          "whisper-tiny",
+		Name:        "Whisper Tiny",
+		Desc:        "Fastest, lowest accuracy (75 MB)",
+		RuntimeKind: "whisper",
+		Files:       []ModelFile{{Role: "model", Filename: "ggml-tiny.bin", Bytes: 75 * 1024 * 1024, URLs: hfURLs("ggerganov/whisper.cpp", "ggml-tiny.bin")}},
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"transcription"},
+	},
+	{
+		ID:          "whisper-base",
+		Name:        "Whisper Base",
+		Desc:        "Fast with decent accuracy (142 MB)",
+		RuntimeKind: "whisper",
+		Files:       []ModelFile{{Role: "model", Filename: "ggml-base.bin", Bytes: 142 * 1024 * 1024, URLs: hfURLs("ggerganov/whisper.cpp", "ggml-base.bin")}},
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"transcription"},
+	},
+	{
+		ID:          "whisper-small",
+		Name:        "Whisper Small",
+		Desc:        "Balanced speed and accuracy (466 MB)",
+		RuntimeKind: "whisper",
+		Files:       []ModelFile{{Role: "model", Filename: "ggml-small.bin", Bytes: 466 * 1024 * 1024, URLs: hfURLs("ggerganov/whisper.cpp", "ggml-small.bin")}},
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"transcription"},
+	},
+	{
+		ID:          "whisper-medium",
+		Name:        "Whisper Medium",
+		Desc:        "High accuracy (1.5 GB)",
+		RuntimeKind: "whisper",
+		Files:       []ModelFile{{Role: "model", Filename: "ggml-medium.bin", Bytes: 1536 * 1024 * 1024, URLs: hfURLs("ggerganov/whisper.cpp", "ggml-medium.bin")}},
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"transcription"},
+	},
+	{
+		ID:          "whisper-large-v3-turbo",
+		Name:        "Whisper Large V3 Turbo",
+		Desc:        "Best accuracy, Turbo variant (~1.6 GB)",
+		RuntimeKind: "whisper",
+		Files:       []ModelFile{{Role: "model", Filename: "ggml-large-v3-turbo.bin", Bytes: 1600 * 1024 * 1024, URLs: hfURLs("ggerganov/whisper.cpp", "ggml-large-v3-turbo.bin")}},
+		Apps:        []string{"clipiq"},
+		Enables:     []string{"transcription"},
 	},
 }
 

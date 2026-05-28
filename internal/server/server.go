@@ -12,28 +12,51 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xluos/ai-model-daemon/internal/webui"
+	"github.com/xluos/ai-model-daemon/pkg/clients"
 	"github.com/xluos/ai-model-daemon/pkg/download"
 	"github.com/xluos/ai-model-daemon/pkg/fit"
 	"github.com/xluos/ai-model-daemon/pkg/hardware"
 	"github.com/xluos/ai-model-daemon/pkg/manifest"
+	"github.com/xluos/ai-model-daemon/pkg/proxy"
+	"github.com/xluos/ai-model-daemon/pkg/queue"
+	"github.com/xluos/ai-model-daemon/pkg/runtime"
 	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
 type Server struct {
-	listener net.Listener
-	mux      *http.ServeMux
-	mu       sync.Mutex
-	active   map[string]context.CancelFunc
-	config   download.Config
-	token    string
+	listener    net.Listener
+	tcpListener net.Listener
+	mux         *http.ServeMux
+	mu          sync.Mutex
+	active      map[string]context.CancelFunc
+	config      download.Config
+	token       string
+
+	rtm        *runtime.RuntimeManager
+	scheduler  *queue.Scheduler
+	proxy      *proxy.Proxy
+	tracker    *clients.Tracker
+	onShutdown func()
 }
 
-func New(token string) *Server {
+func New(token string, onShutdown func()) *Server {
+	rtm := runtime.NewRuntimeManager()
+	sched := queue.NewScheduler(rtm, queue.DefaultConfig())
+	p := proxy.New(sched, rtm)
+
 	s := &Server{
-		mux:    http.NewServeMux(),
-		active: make(map[string]context.CancelFunc),
-		token:  token,
+		mux:        http.NewServeMux(),
+		active:     make(map[string]context.CancelFunc),
+		token:      token,
+		rtm:        rtm,
+		scheduler:  sched,
+		proxy:      p,
+		tracker:    clients.NewTracker(30*time.Second, onShutdown),
+		onShutdown: onShutdown,
 	}
+
+	// Existing model management routes
 	s.mux.HandleFunc("GET /models", s.handleListModels)
 	s.mux.HandleFunc("GET /models/{id}", s.handleGetModel)
 	s.mux.HandleFunc("POST /models/{id}/download", s.handleDownload)
@@ -45,6 +68,41 @@ func New(token string) *Server {
 	s.mux.HandleFunc("GET /hardware", s.handleHardware)
 	s.mux.HandleFunc("GET /models/recommended", s.handleRecommended)
 	s.mux.HandleFunc("POST /models/{id}/recompute-fit", s.handleRecomputeFit)
+
+	// OpenAI-compatible proxy routes
+	s.mux.HandleFunc("GET /v1/models", p.HandleModels)
+	s.mux.HandleFunc("POST /v1/chat/completions", p.HandleChatCompletions)
+	s.mux.HandleFunc("POST /v1/completions", p.HandleCompletions)
+	s.mux.HandleFunc("POST /v1/audio/transcriptions", p.HandleAudioTranscriptions)
+
+	// Runtime management routes
+	s.mux.HandleFunc("GET /api/runtime/status", s.handleRuntimeStatus)
+	s.mux.HandleFunc("POST /api/runtime/llm/start", s.handleRuntimeLLMStart)
+	s.mux.HandleFunc("POST /api/runtime/llm/stop", s.handleRuntimeLLMStop)
+	s.mux.HandleFunc("POST /api/runtime/whisper/start", s.handleRuntimeWhisperStart)
+	s.mux.HandleFunc("POST /api/runtime/whisper/stop", s.handleRuntimeWhisperStop)
+	s.mux.HandleFunc("GET /api/runtime/llm/logs", s.handleRuntimeLLMLogs)
+	s.mux.HandleFunc("GET /api/runtime/whisper/logs", s.handleRuntimeWhisperLogs)
+
+	// Queue management routes
+	s.mux.HandleFunc("GET /api/queue/status", s.handleQueueStatus)
+	s.mux.HandleFunc("POST /api/queue/config", s.handleQueueConfig)
+
+	// Binary management routes
+	s.mux.HandleFunc("GET /api/binaries/status", s.handleBinariesStatus)
+	s.mux.HandleFunc("POST /api/binaries/llama-server/download", s.handleBinaryDownload(runtime.BinaryLlamaServer))
+	s.mux.HandleFunc("POST /api/binaries/whisper-server/download", s.handleBinaryDownload(runtime.BinaryWhisperServer))
+
+	// Client lifecycle routes
+	s.mux.HandleFunc("POST /api/clients/register", s.handleClientRegister)
+	s.mux.HandleFunc("POST /api/clients/deregister", s.handleClientDeregister)
+	s.mux.HandleFunc("POST /api/clients/heartbeat", s.handleClientHeartbeat)
+	s.mux.HandleFunc("GET /api/clients", s.handleClientList)
+
+	// Web UI (served on GET / with auto token redirect)
+	s.mux.HandleFunc("GET /ui", s.handleUI)
+	s.mux.HandleFunc("GET /", s.handleIndex)
+
 	return s
 }
 
@@ -57,13 +115,43 @@ func (s *Server) ListenAndServe(socketPath string) error {
 	return http.Serve(ln, s.withAuth(s.mux))
 }
 
+func (s *Server) ListenAndServeTCP(addr string) error {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("listen tcp: %w", err)
+	}
+	s.tcpListener = ln
+	return http.Serve(ln, s.withCORS(s.withAuth(s.mux)))
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) withAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip auth for UI pages (token is passed via URL param, then used in JS headers)
+		if r.URL.Path == "/" || r.URL.Path == "/ui" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if s.token != "" {
 			auth := r.Header.Get("Authorization")
 			if auth != "Bearer "+s.token {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
-				return
+				// Also accept token as query parameter for browser convenience
+				if r.URL.Query().Get("token") != s.token {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+					return
+				}
 			}
 		}
 		next.ServeHTTP(w, r)
@@ -74,7 +162,23 @@ func Cleanup(socketPath string) {
 	cleanupIPC(socketPath)
 }
 
+func (s *Server) Tracker() *clients.Tracker {
+	return s.tracker
+}
+
 func (s *Server) Close() error {
+	if s.tracker != nil {
+		s.tracker.Close()
+	}
+	if s.scheduler != nil {
+		s.scheduler.Close()
+	}
+	if s.rtm != nil {
+		s.rtm.StopAll()
+	}
+	if s.tcpListener != nil {
+		s.tcpListener.Close()
+	}
 	if s.listener != nil {
 		return s.listener.Close()
 	}
@@ -495,4 +599,251 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// --- Runtime management handlers ---
+
+func (s *Server) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.rtm.Status())
+}
+
+func (s *Server) handleRuntimeLLMStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ModelID     string `json:"modelId"`
+		ContextSize int    `json:"contextSize,omitempty"`
+		GPULayers   int    `json:"gpuLayers,omitempty"`
+		Parallel    int    `json:"parallel,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.ModelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "modelId is required"})
+		return
+	}
+
+	opts := runtime.LLMOpts{
+		ContextSize: body.ContextSize,
+		GPULayers:   body.GPULayers,
+		Parallel:    body.Parallel,
+	}
+	if err := s.rtm.EnsureLLM(body.ModelID, opts); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.rtm.LLM().Status())
+}
+
+func (s *Server) handleRuntimeLLMStop(w http.ResponseWriter, r *http.Request) {
+	if err := s.rtm.LLM().Stop(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) handleRuntimeWhisperStart(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ModelID string `json:"modelId"`
+		Threads int    `json:"threads,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.ModelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "modelId is required"})
+		return
+	}
+
+	opts := runtime.WhisperOpts{Threads: body.Threads}
+	if err := s.rtm.EnsureWhisper(body.ModelID, opts); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, s.rtm.Whisper().Status())
+}
+
+func (s *Server) handleRuntimeWhisperStop(w http.ResponseWriter, r *http.Request) {
+	if err := s.rtm.Whisper().Stop(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) handleRuntimeLLMLogs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"logs": s.rtm.LLM().Logs()})
+}
+
+func (s *Server) handleRuntimeWhisperLogs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"logs": s.rtm.Whisper().Logs()})
+}
+
+// --- Queue management handlers ---
+
+func (s *Server) handleQueueStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.scheduler.Status())
+}
+
+func (s *Server) handleQueueConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		MaxQueueSize         *int    `json:"maxQueueSize,omitempty"`
+		MaxWaitTimeSec       *int    `json:"maxWaitTimeSec,omitempty"`
+		IdleTimeoutSec       *int    `json:"idleTimeoutSec,omitempty"`
+		MaxBatchBeforeSwitch *int    `json:"maxBatchBeforeSwitch,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+
+	cfg := s.scheduler.Config()
+	if body.MaxQueueSize != nil {
+		cfg.MaxQueueSize = *body.MaxQueueSize
+	}
+	if body.MaxWaitTimeSec != nil {
+		cfg.MaxWaitTime = time.Duration(*body.MaxWaitTimeSec) * time.Second
+	}
+	if body.IdleTimeoutSec != nil {
+		cfg.IdleTimeout = time.Duration(*body.IdleTimeoutSec) * time.Second
+	}
+	if body.MaxBatchBeforeSwitch != nil {
+		cfg.MaxBatchBeforeSwitch = *body.MaxBatchBeforeSwitch
+	}
+	s.scheduler.UpdateConfig(cfg)
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+// --- Binary management handlers ---
+
+func (s *Server) handleBinariesStatus(w http.ResponseWriter, r *http.Request) {
+	bm := s.rtm.BinaryManager()
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"llamaServer":   bm.Status(runtime.BinaryLlamaServer),
+		"whisperServer": bm.Status(runtime.BinaryWhisperServer),
+	})
+}
+
+func (s *Server) handleBinaryDownload(kind runtime.BinaryKind) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		bm := s.rtm.BinaryManager()
+
+		info := bm.Status(kind)
+		if info.Available {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"status": "already_available",
+				"path":   info.Path,
+			})
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
+			return
+		}
+
+		err := bm.Download(r.Context(), kind, func(p download.Progress) {
+			data, _ := json.Marshal(p)
+			fmt.Fprintf(w, "event: progress\ndata: %s\n\n", data)
+			flusher.Flush()
+		})
+
+		if err != nil {
+			data, _ := json.Marshal(map[string]interface{}{"ok": false, "error": err.Error()})
+			fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
+			flusher.Flush()
+			return
+		}
+
+		updated := bm.Status(kind)
+		data, _ := json.Marshal(map[string]interface{}{"ok": true, "path": updated.Path})
+		fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
+		flusher.Flush()
+	}
+}
+
+// --- Web UI handlers ---
+
+func (s *Server) handleUI(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(webui.IndexHTML)
+}
+
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	http.Redirect(w, r, "/ui?token="+s.token, http.StatusFound)
+}
+
+// --- Client lifecycle handlers ---
+
+func (s *Server) handleClientRegister(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID   string `json:"id"`
+		Name string `json:"name,omitempty"`
+		PID  int    `json:"pid,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	s.tracker.Register(body.ID, body.Name, body.PID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "registered",
+		"clients": s.tracker.Count(),
+	})
+}
+
+func (s *Server) handleClientDeregister(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.ID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	remaining := s.tracker.Deregister(body.ID)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":    "deregistered",
+		"remaining": remaining,
+	})
+}
+
+func (s *Server) handleClientHeartbeat(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if !s.tracker.Heartbeat(body.ID) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "client not registered"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleClientList(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"clients": s.tracker.List(),
+		"count":   s.tracker.Count(),
+	})
 }

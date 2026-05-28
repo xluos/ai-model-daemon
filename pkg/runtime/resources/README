@@ -1,0 +1,2 @@
+Embedded binaries directory.
+macOS build places whisper-server here via: make whisper

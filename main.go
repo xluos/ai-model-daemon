@@ -6,10 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/xluos/ai-model-daemon/pkg/download"
 	"github.com/xluos/ai-model-daemon/pkg/fit"
@@ -59,13 +63,16 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: ai-model-daemon <command>
 
 Commands:
-  serve              Start the daemon (HTTP API over Unix socket)
+  serve [--http addr] Start the daemon (Unix socket + optional TCP)
   status             Print daemon status
   list               List all models (JSON)
   download <id>      Download a model (blocks until complete)
   path <id>          Print model file paths (JSON)
   hardware           Detect and print hardware info (JSON)
-  recommend          List models sorted by fit for this machine (JSON)`)
+  recommend          List models sorted by fit for this machine (JSON)
+
+Examples:
+  ai-model-daemon serve --http :9090    # Unix socket + HTTP on port 9090`)
 }
 
 func generateToken() string {
@@ -76,7 +83,71 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+func parseServeFlags() string {
+	var httpAddr string
+	for i := 2; i < len(os.Args); i++ {
+		if os.Args[i] == "--http" && i+1 < len(os.Args) {
+			httpAddr = os.Args[i+1]
+			i++
+		}
+	}
+	return httpAddr
+}
+
+func isExistingDaemonAlive(pidPath, socketPath string) (int, string, bool) {
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0, "", false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || pid <= 0 {
+		return 0, "", false
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return 0, "", false
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return 0, "", false
+	}
+	tokenData, _ := os.ReadFile(storage.TokenPath())
+	token := strings.TrimSpace(string(tokenData))
+	if token == "" {
+		return 0, "", false
+	}
+	// PID 存活不代表是我们的 daemon（PID 可能被复用）
+	// 必须验证 socket 能连通并且 /status 返回正常
+	if !probeDaemonSocket(socketPath, token) {
+		return 0, "", false
+	}
+	return pid, token, true
+}
+
+func probeDaemonSocket(socketPath, token string) bool {
+	client := http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.DialTimeout("unix", socketPath, 2*time.Second)
+			},
+		},
+		Timeout: 3 * time.Second,
+	}
+	req, err := http.NewRequest("GET", "http://daemon/status", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == 200
+}
+
 func cmdServe() {
+	httpAddr := parseServeFlags()
+
 	if err := storage.EnsureDir(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -86,22 +157,63 @@ func cmdServe() {
 	pidPath := storage.PIDPath()
 	tokenPath := storage.TokenPath()
 
+	if existPID, existToken, alive := isExistingDaemonAlive(pidPath, socketPath); alive {
+		ready := map[string]interface{}{
+			"socket":   socketPath,
+			"pid":      existPID,
+			"token":    existToken,
+			"reused":   true,
+		}
+		if existHTTP, err := os.ReadFile(storage.HTTPAddrPath()); err == nil {
+			ready["http"] = strings.TrimSpace(string(existHTTP))
+		}
+		readyJSON, _ := json.Marshal(ready)
+		fmt.Println(string(readyJSON))
+		fmt.Fprintf(os.Stderr, "daemon already running (pid %d), reusing\n", existPID)
+		os.Exit(0)
+	}
+
 	pid := os.Getpid()
 	token := generateToken()
 
+	httpAddrPath := storage.HTTPAddrPath()
 	os.WriteFile(pidPath, []byte(strconv.Itoa(pid)), 0644)
 	os.WriteFile(tokenPath, []byte(token), 0600)
+	if httpAddr != "" {
+		os.WriteFile(httpAddrPath, []byte(httpAddr), 0644)
+	} else {
+		os.Remove(httpAddrPath)
+	}
 
-	srv := server.New(token)
+	shutdown := func() {
+		fmt.Fprintf(os.Stderr, "all clients disconnected, shutting down\n")
+		os.Remove(socketPath)
+		os.Remove(pidPath)
+		os.Remove(tokenPath)
+		os.Remove(httpAddrPath)
+		os.Exit(0)
+	}
+
+	srv := server.New(token, shutdown)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		srv.Close()
+		done := make(chan struct{})
+		go func() {
+			srv.Close()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			fmt.Fprintf(os.Stderr, "cleanup timed out, forcing exit\n")
+		}
 		os.Remove(socketPath)
 		os.Remove(pidPath)
 		os.Remove(tokenPath)
+		os.Remove(httpAddrPath)
 		os.Exit(0)
 	}()
 
@@ -110,13 +222,27 @@ func cmdServe() {
 		"pid":    pid,
 		"token":  token,
 	}
+	if httpAddr != "" {
+		ready["http"] = httpAddr
+	}
 	readyJSON, _ := json.Marshal(ready)
 	fmt.Println(string(readyJSON))
 
+	if httpAddr != "" {
+		go func() {
+			fmt.Fprintf(os.Stderr, "HTTP listening on %s\n", httpAddr)
+			if err := srv.ListenAndServeTCP(httpAddr); err != nil {
+				fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
+			}
+		}()
+	}
+
 	if err := srv.ListenAndServe(socketPath); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Remove(socketPath)
 		os.Remove(pidPath)
 		os.Remove(tokenPath)
+		os.Remove(httpAddrPath)
 		os.Exit(1)
 	}
 }

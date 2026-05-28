@@ -1,0 +1,1184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-model-daemon</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f1117;--surface:#1a1d27;--surface2:#242836;--border:#2e3348;--text:#e4e6f0;--text2:#8b8fa3;--accent:#6c7cff;--accent2:#4f5bcc;--green:#34d399;--yellow:#fbbf24;--red:#f87171;--orange:#fb923c;--radius:8px;--font:system-ui,-apple-system,sans-serif;--mono:'SF Mono',Consolas,'Liberation Mono',monospace}
+body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:1.5;min-height:100vh}
+a{color:var(--accent);text-decoration:none}
+
+.shell{display:flex;height:100vh}
+.sidebar{width:220px;background:var(--surface);border-right:1px solid var(--border);padding:16px 0;flex-shrink:0;display:flex;flex-direction:column}
+.sidebar h1{font-size:14px;font-weight:600;padding:0 16px 16px;color:var(--text2);letter-spacing:.5px}
+.sidebar a{display:flex;align-items:center;gap:8px;padding:8px 16px;font-size:13px;color:var(--text2);transition:all .15s}
+.sidebar a:hover,.sidebar a.active{color:var(--text);background:var(--surface2)}
+.sidebar a.active{border-right:2px solid var(--accent)}
+.sidebar .spacer{flex:1}
+.sidebar .ver{padding:8px 16px;font-size:11px;color:var(--border)}
+
+.main{flex:1;overflow-y:auto;padding:24px 32px;display:flex;flex-direction:column}
+.main h2{font-size:18px;margin-bottom:16px;font-weight:600}
+
+.page{display:none}
+.page.active{display:block}
+#page-chat.active{display:flex;flex-direction:column;height:100%}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.card h3{font-size:14px;font-weight:600;margin-bottom:8px}
+.card-row{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.card-row .card{flex:1;min-width:240px}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;text-transform:uppercase}
+.badge.green{background:rgba(52,211,153,.15);color:var(--green)}
+.badge.yellow{background:rgba(251,191,36,.15);color:var(--yellow)}
+.badge.red{background:rgba(248,113,113,.15);color:var(--red)}
+.badge.blue{background:rgba(108,124,255,.15);color:var(--accent)}
+.badge.gray{background:rgba(139,143,163,.15);color:var(--text2)}
+
+.kv{display:grid;grid-template-columns:140px 1fr;gap:4px 12px;font-size:13px}
+.kv dt{color:var(--text2)}
+.kv dd{color:var(--text);word-break:break-all}
+
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--border)}
+th{color:var(--text2);font-weight:500;font-size:12px;letter-spacing:.3px}
+tr:hover td{background:var(--surface2)}
+
+button,.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface2);color:var(--text);font-size:12px;font-family:var(--font);cursor:pointer;transition:all .15s}
+button:hover,.btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.4;cursor:not-allowed;background:var(--surface2);border-color:var(--border);color:var(--text2)}
+button.danger:hover{background:var(--red);border-color:var(--red)}
+button.sm{padding:4px 10px;font-size:11px}
+
+input,select,textarea{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:6px 10px;font-size:13px;font-family:var(--font);outline:none;width:100%}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+textarea{resize:vertical;min-height:60px}
+
+.log-box{background:#0a0c12;border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-family:var(--mono);font-size:11px;line-height:1.6;max-height:300px;overflow-y:auto;white-space:pre-wrap;color:var(--text2)}
+
+.chat-container{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}
+.chat-messages{flex:1;overflow-y:auto;padding:8px 0}
+.chat-msg{margin-bottom:12px;display:flex;gap:10px}
+.chat-msg .role{font-size:11px;font-weight:600;text-transform:uppercase;color:var(--text2);min-width:60px;padding-top:2px}
+.chat-msg .content{flex:1;font-size:13px;line-height:1.6;white-space:pre-wrap}
+.chat-msg.assistant .content{color:var(--green)}
+.chat-input{display:flex;gap:8px;padding-top:12px;border-top:1px solid var(--border)}
+.chat-input textarea{flex:1;min-height:40px;max-height:120px}
+
+.endpoint-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;overflow:hidden}
+.endpoint-header{display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;user-select:none}
+.endpoint-header:hover{background:var(--surface2)}
+.endpoint-method{font-size:11px;font-weight:700;font-family:var(--mono);padding:2px 6px;border-radius:4px;min-width:48px;text-align:center}
+.endpoint-method.GET{background:rgba(52,211,153,.15);color:var(--green)}
+.endpoint-method.POST{background:rgba(108,124,255,.15);color:var(--accent)}
+.endpoint-method.DELETE{background:rgba(248,113,113,.15);color:var(--red)}
+.endpoint-path{font-family:var(--mono);font-size:13px;flex:1}
+.endpoint-desc{font-size:12px;color:var(--text2)}
+.endpoint-body{display:none;padding:14px;border-top:1px solid var(--border);background:var(--bg)}
+.endpoint-body.open{display:block}
+.endpoint-body label{display:block;font-size:12px;color:var(--text2);margin-bottom:4px;margin-top:8px}
+.endpoint-body label:first-child{margin-top:0}
+.endpoint-result{margin-top:12px}
+.endpoint-result pre{background:#0a0c12;padding:12px;border-radius:var(--radius);font-family:var(--mono);font-size:11px;line-height:1.5;overflow-x:auto;max-height:400px;overflow-y:auto;color:var(--text2)}
+.endpoint-result .status{font-size:12px;margin-bottom:4px;font-weight:600}
+.endpoint-result .status.ok{color:var(--green)}
+.endpoint-result .status.err{color:var(--red)}
+
+.toast{position:fixed;bottom:20px;right:20px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:10px 16px;font-size:13px;z-index:1000;animation:slideUp .3s ease}
+@keyframes slideUp{from{transform:translateY(20px);opacity:0}to{transform:translateY(0);opacity:1}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <nav class="sidebar">
+    <h1>Daemon 控制台</h1>
+    <a href="#dashboard" class="active" data-page="dashboard">总览</a>
+    <a href="#models" data-page="models">模型管理</a>
+    <a href="#runtime" data-page="runtime">推理运行时</a>
+    <a href="#queue" data-page="queue">请求队列</a>
+    <a href="#chat" data-page="chat">对话测试</a>
+    <a href="#whisper" data-page="whisper">语音转写</a>
+    <a href="#api" data-page="api">接口调试</a>
+    <div class="spacer"></div>
+    <div class="ver" id="version-info">ai-model-daemon</div>
+  </nav>
+
+  <div class="main">
+    <!-- 总览 -->
+    <div class="page active" id="page-dashboard">
+      <h2>总览</h2>
+      <div class="card-row">
+        <div class="card" id="dash-status"></div>
+        <div class="card" id="dash-hardware"></div>
+      </div>
+      <div class="card-row">
+        <div class="card" id="dash-llm"></div>
+        <div class="card" id="dash-whisper"></div>
+      </div>
+      <div class="card-row">
+        <div class="card" id="dash-binaries"></div>
+        <div class="card" id="dash-queue"></div>
+      </div>
+    </div>
+
+    <!-- 模型管理 -->
+    <div class="page" id="page-models">
+      <h2>模型管理</h2>
+      <div style="margin-bottom:12px;display:flex;gap:8px;align-items:center">
+        <select id="model-filter" style="width:auto">
+          <option value="">全部</option>
+          <option value="llm">LLM 语言模型</option>
+          <option value="whisper">Whisper 语音</option>
+          <option value="onnx">ONNX / 其他</option>
+        </select>
+        <button onclick="loadModels()">刷新</button>
+      </div>
+      <table>
+        <thead><tr><th>ID</th><th>名称</th><th>参数</th><th>大小</th><th>适配度</th><th>内存占比</th><th>预估速度</th><th>状态</th><th>操作</th></tr></thead>
+        <tbody id="models-tbody"></tbody>
+      </table>
+    </div>
+
+    <!-- 推理运行时 -->
+    <div class="page" id="page-runtime">
+      <h2>推理运行时</h2>
+      <div class="card-row">
+        <div class="card">
+          <h3>LLM 运行时 (llama-server)</h3>
+          <div id="rt-llm-info"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+            <div><label style="font-size:12px;color:var(--text2)">模型</label><select id="rt-llm-model" style="width:180px"></select></div>
+            <div><label style="font-size:12px;color:var(--text2)">上下文</label><input id="rt-llm-ctx" type="number" placeholder="自动" style="width:80px"></div>
+            <div><label style="font-size:12px;color:var(--text2)">并行数</label><input id="rt-llm-parallel" type="number" value="1" style="width:60px"></div>
+            <button onclick="startLLM()">启动</button>
+            <button class="danger" onclick="stopLLM()">停止</button>
+          </div>
+          <div style="margin-top:12px"><button class="sm" onclick="showLLMLogs()">查看日志</button></div>
+          <div id="rt-llm-logs" class="log-box" style="display:none;margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <h3>Whisper 运行时 (whisper-server)</h3>
+          <div id="rt-whisper-info"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+            <div><label style="font-size:12px;color:var(--text2)">模型</label><select id="rt-whisper-model" style="width:180px"></select></div>
+            <button onclick="startWhisper()">启动</button>
+            <button class="danger" onclick="stopWhisper()">停止</button>
+          </div>
+          <div style="margin-top:12px"><button class="sm" onclick="showWhisperLogs()">查看日志</button></div>
+          <div id="rt-whisper-logs" class="log-box" style="display:none;margin-top:8px"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>推理引擎</h3>
+        <div id="rt-binaries"></div>
+      </div>
+    </div>
+
+    <!-- 请求队列 -->
+    <div class="page" id="page-queue">
+      <h2>请求队列</h2>
+      <div class="card-row">
+        <div class="card" id="q-status"></div>
+        <div class="card">
+          <h3>调度配置</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+            <div><label style="font-size:12px;color:var(--text2)">最大队列长度</label><input id="q-max" type="number"></div>
+            <div><label style="font-size:12px;color:var(--text2)">空闲卸载超时 (秒)</label><input id="q-idle" type="number"></div>
+            <div><label style="font-size:12px;color:var(--text2)">最大等待时间 (秒)</label><input id="q-wait" type="number"></div>
+            <div><label style="font-size:12px;color:var(--text2)">切换前最大批量</label><input id="q-batch" type="number"></div>
+          </div>
+          <button style="margin-top:10px" onclick="updateQueueConfig()">保存配置</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 对话测试 -->
+    <div class="page" id="page-chat">
+      <h2>对话测试</h2>
+      <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="chat-model" style="width:auto"></select>
+        <label style="font-size:12px;color:var(--text2);display:flex;gap:4px"><input type="checkbox" id="chat-stream" style="width:auto" checked>流式输出</label>
+        <label style="font-size:12px;color:var(--text2);display:flex;gap:4px"><input type="checkbox" id="chat-thinking" style="width:auto" checked>深度思考</label>
+        <button class="sm" onclick="clearChat()">清空</button>
+      </div>
+      <details id="chat-params-panel" style="margin-bottom:8px">
+        <summary style="cursor:pointer;font-size:12px;color:var(--text2);margin-bottom:6px">⚙ 采样参数</summary>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;padding:10px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)">
+          <label style="font-size:12px;color:var(--text2)">Temperature
+            <input type="number" id="cp-temperature" value="0.8" min="0" max="2" step="0.1" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Top P
+            <input type="number" id="cp-top_p" value="0.95" min="0" max="1" step="0.05" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Top K
+            <input type="number" id="cp-top_k" value="40" min="0" max="200" step="1" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Min P
+            <input type="number" id="cp-min_p" value="0.05" min="0" max="1" step="0.01" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Max Tokens
+            <input type="number" id="cp-max_tokens" value="" min="-1" step="1" placeholder="不限" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Repeat Penalty
+            <input type="number" id="cp-repeat_penalty" value="1.0" min="0" max="2" step="0.05" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Presence Penalty
+            <input type="number" id="cp-presence_penalty" value="0" min="-2" max="2" step="0.1" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Frequency Penalty
+            <input type="number" id="cp-frequency_penalty" value="0" min="-2" max="2" step="0.1" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Seed
+            <input type="number" id="cp-seed" value="" min="-1" step="1" placeholder="随机" style="margin-top:2px">
+          </label>
+          <label style="font-size:12px;color:var(--text2)">Stop 序列
+            <input type="text" id="cp-stop" value="" placeholder='如: ["\n"]' style="margin-top:2px">
+          </label>
+          <div style="display:flex;align-items:end">
+            <button class="sm" onclick="resetChatParams()">恢复默认</button>
+          </div>
+        </div>
+      </details>
+      <div class="chat-container">
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input">
+          <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行)" rows="2"></textarea>
+          <button onclick="sendChat()" id="chat-send">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 语音转写 -->
+    <div class="page" id="page-whisper">
+      <h2>语音转写</h2>
+      <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="whisper-model" style="width:auto"></select>
+        <button class="sm" onclick="startWhisperRuntime()">启动运行时</button>
+        <span id="whisper-status-badge" style="font-size:12px"></span>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <h3>上传音频</h3>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="whisper-file" accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm" style="font-size:12px;width:auto">
+          <select id="whisper-lang" style="width:auto">
+            <option value="">自动检测</option>
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+            <option value="ja">日本語</option>
+            <option value="ko">한국어</option>
+          </select>
+          <label style="font-size:12px;color:var(--text2);display:flex;gap:4px"><input type="checkbox" id="whisper-translate" style="width:auto">翻译为英文</label>
+          <button onclick="transcribeAudio()" id="whisper-send">转写</button>
+        </div>
+        <div id="whisper-upload-info" style="font-size:12px;color:var(--text2);margin-top:6px"></div>
+      </div>
+      <div class="card" id="whisper-result-card" style="display:none">
+        <h3>转写结果</h3>
+        <pre id="whisper-result" style="white-space:pre-wrap;font-size:13px;line-height:1.6;margin-top:8px;max-height:400px;overflow-y:auto"></pre>
+        <div id="whisper-meta" style="font-size:11px;color:var(--text2);margin-top:8px"></div>
+      </div>
+    </div>
+
+    <!-- 接口调试 -->
+    <div class="page" id="page-api">
+      <h2>接口调试</h2>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">点击任意接口展开，填入参数后可直接调用测试。</p>
+      <div id="api-endpoints"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const BASE = location.origin;
+
+async function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+  const res = await fetch(BASE + path, { ...opts, headers });
+  return res;
+}
+async function apiJSON(path, opts = {}) {
+  try {
+    const res = await api(path, opts);
+    if (!res.ok) {
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = { error: text }; }
+      if (res.status === 401) showAuthError();
+      return { status: res.status, data, ok: false };
+    }
+    return { status: res.status, data: await res.json(), ok: true };
+  } catch (e) {
+    return { status: 0, data: { error: e.message }, ok: false };
+  }
+}
+async function apiPost(path, body) {
+  return apiJSON(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+let authErrorShown = false;
+function showAuthError() {
+  if (authErrorShown) return;
+  authErrorShown = true;
+  const banner = document.createElement('div');
+  banner.style.cssText = 'position:fixed;top:0;left:220px;right:0;background:var(--red);color:#fff;padding:10px 20px;font-size:13px;z-index:999;display:flex;align-items:center;gap:12px';
+  banner.innerHTML = '认证失败 — Token 无效或已过期。请从终端输出中复制新的 Token，或重新访问根路径获取。<button onclick="location.href=\'/\'" style="background:#fff;color:var(--red);border:none;padding:4px 12px;border-radius:4px;cursor:pointer;font-size:12px">重新获取</button>';
+  document.body.appendChild(banner);
+}
+
+function toast(msg, dur = 2500) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), dur);
+}
+
+function fmtBytes(b) {
+  if (!b) return '—';
+  if (b < 1024) return b + ' B';
+  if (b < 1024*1024) return (b/1024).toFixed(1) + ' KB';
+  if (b < 1024*1024*1024) return (b/1024/1024).toFixed(0) + ' MB';
+  return (b/1024/1024/1024).toFixed(1) + ' GB';
+}
+
+const STATE_CN = { idle:'空闲', starting:'启动中', ready:'就绪', stopping:'停止中', error:'错误' };
+const STATE_COLOR = { idle:'gray', starting:'yellow', ready:'green', stopping:'yellow', error:'red' };
+function stateBadge(state) {
+  return `<span class="badge ${STATE_COLOR[state]||'gray'}">${STATE_CN[state]||state}</span>`;
+}
+
+// --- 导航 ---
+document.querySelectorAll('.sidebar a[data-page]').forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    document.querySelectorAll('.sidebar a').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + a.dataset.page).classList.add('active');
+    if (a.dataset.page === 'models') loadModels();
+    if (a.dataset.page === 'runtime') loadRuntime();
+    if (a.dataset.page === 'queue') loadQueue();
+    if (a.dataset.page === 'chat') loadChatModels();
+    if (a.dataset.page === 'whisper') loadWhisperModels();
+  });
+});
+
+// --- 总览 ---
+function errCard(title, msg) {
+  return `<h3>${title}</h3><p style="color:var(--red);font-size:13px">${msg}</p>`;
+}
+
+async function loadDashboard() {
+  const [status, hw, rt, q] = await Promise.all([
+    apiJSON('/status'), apiJSON('/hardware'), apiJSON('/api/runtime/status'), apiJSON('/api/queue/status')
+  ]);
+
+  if (status.ok) {
+    const d = status.data;
+    document.getElementById('dash-status').innerHTML = `<h3>守护进程状态</h3><dl class="kv">
+      <dt>进程 PID</dt><dd>${d.pid}</dd>
+      <dt>Socket 路径</dt><dd style="font-size:11px">${d.socket}</dd>
+      <dt>存储目录</dt><dd style="font-size:11px">${d.storage}</dd>
+      <dt>就绪</dt><dd>${d.ready ? '<span class="badge green">是</span>' : '<span class="badge red">否</span>'}</dd>
+    </dl>`;
+  } else {
+    document.getElementById('dash-status').innerHTML = errCard('守护进程状态', '加载失败: ' + (status.data.error || 'HTTP ' + status.status));
+  }
+
+  if (hw.ok) {
+    const h = hw.data;
+    document.getElementById('dash-hardware').innerHTML = `<h3>硬件信息</h3><dl class="kv">
+      <dt>CPU</dt><dd>${h.cpuModel || h.platform+'/'+h.arch}</dd>
+      <dt>内存</dt><dd>${fmtBytes(h.totalMemoryBytes)}</dd>
+      <dt>GPU 显存</dt><dd>${fmtBytes(h.gpuMemoryCapBytes)}</dd>
+      <dt>推理后端</dt><dd><span class="badge blue">${h.backend}</span></dd>
+      <dt>推荐量化</dt><dd>${h.recommendedQuant || '—'}</dd>
+    </dl>`;
+  } else {
+    document.getElementById('dash-hardware').innerHTML = errCard('硬件信息', '加载失败');
+  }
+
+  if (rt.ok) {
+    const r = rt.data;
+    document.getElementById('dash-llm').innerHTML = `<h3>LLM 运行时</h3><dl class="kv">
+      <dt>状态</dt><dd>${stateBadge(r.llm.state)}</dd>
+      <dt>当前模型</dt><dd>${r.llm.modelId || '—'}</dd>
+      <dt>端口</dt><dd>${r.llm.port || '—'}</dd>
+      <dt>进行中请求</dt><dd>${r.llm.inFlight}</dd>
+    </dl>`;
+
+    document.getElementById('dash-whisper').innerHTML = `<h3>Whisper 运行时</h3><dl class="kv">
+      <dt>状态</dt><dd>${stateBadge(r.whisper.state)}</dd>
+      <dt>当前模型</dt><dd>${r.whisper.modelId || '—'}</dd>
+      <dt>端口</dt><dd>${r.whisper.port || '—'}</dd>
+      <dt>进行中请求</dt><dd>${r.whisper.inFlight}</dd>
+    </dl>`;
+
+    const b = r.binaries;
+    document.getElementById('dash-binaries').innerHTML = `<h3>推理引擎</h3><dl class="kv">
+      <dt>llama-server</dt><dd>${b.llamaServer.available ? '<span class="badge green">已安装</span>' : '<span class="badge red">未安装</span>'} ${b.llamaServer.version||''}</dd>
+      <dt>whisper-server</dt><dd>${b.whisperServer.available ? '<span class="badge green">已安装</span>' : '<span class="badge red">未安装</span>'}</dd>
+    </dl>`;
+  } else {
+    document.getElementById('dash-llm').innerHTML = errCard('LLM 运行时', '加载失败');
+    document.getElementById('dash-whisper').innerHTML = errCard('Whisper 运行时', '加载失败');
+    document.getElementById('dash-binaries').innerHTML = errCard('推理引擎', '加载失败');
+  }
+
+  if (q.ok) {
+    const qs = q.data;
+    document.getElementById('dash-queue').innerHTML = `<h3>请求队列</h3><dl class="kv">
+      <dt>LLM 排队中</dt><dd>${qs.llmQueue.pending}</dd>
+      <dt>LLM 当前模型</dt><dd>${qs.llmQueue.currentModel || '—'}</dd>
+      <dt>Whisper 排队中</dt><dd>${qs.whisperQueue.pending}</dd>
+      <dt>Whisper 当前模型</dt><dd>${qs.whisperQueue.currentModel || '—'}</dd>
+    </dl>`;
+  } else {
+    document.getElementById('dash-queue').innerHTML = errCard('请求队列', '加载失败');
+  }
+}
+
+// --- 模型管理 ---
+let allModels = [];
+async function loadModels() {
+  const [rec, plain] = await Promise.all([
+    apiJSON('/models/recommended'),
+    apiJSON('/models')
+  ]);
+  if (!rec.ok && !plain.ok) { toast('模型列表加载失败'); return; }
+
+  const recMap = {};
+  if (rec.ok) {
+    for (const m of (rec.data.models || [])) recMap[m.id] = m;
+  }
+
+  const plainList = plain.ok ? (plain.data || []) : [];
+  allModels = plainList.map(m => ({ ...m, ...(recMap[m.id] || {}) }));
+  renderModels();
+}
+
+const fitBadgeMap = { perfect: 'green', good: 'blue', marginal: 'yellow', tight: 'orange', impossible: 'red' };
+const fitLabelMap = { perfect: '完美', good: '良好', marginal: '勉强', tight: '紧张', impossible: '不可用' };
+
+function renderModels() {
+  const filter = document.getElementById('model-filter').value;
+  const tbody = document.getElementById('models-tbody');
+  const filtered = allModels.filter(m => {
+    if (!filter) return true;
+    if (filter === 'whisper') return m.id.startsWith('whisper');
+    if (filter === 'llm') return !m.id.startsWith('whisper') && !['yunet','dinov2-small','nima','insightface-w600k-r50'].includes(m.id);
+    return ['yunet','dinov2-small','nima','insightface-w600k-r50'].includes(m.id);
+  });
+  tbody.innerHTML = filtered.map(m => {
+    const status = m.ready ? '<span class="badge green">就绪</span>' :
+                   m.downloading ? '<span class="badge yellow">下载中</span>' :
+                   '<span class="badge gray">未下载</span>';
+    const fitCls = fitBadgeMap[m.fit] || 'gray';
+    const fitLabel = fitLabelMap[m.fit] || m.fit || '—';
+    const fitBadge = m.fit ? `<span class="badge ${fitCls}">${fitLabel}</span>` : '—';
+    const memPct = m.memPercent > 0 ? m.memPercent + '%' : '—';
+    const tps = m.tps > 0 ? m.tps + ' tok/s' : '—';
+    const params = m.params || '—';
+    return `<tr>
+      <td style="font-family:var(--mono);font-size:12px">${m.id}</td>
+      <td>${m.name}</td>
+      <td>${params}</td>
+      <td>${fmtBytes(m.totalBytes)}</td>
+      <td>${fitBadge}</td>
+      <td>${memPct}</td>
+      <td>${tps}</td>
+      <td>${status}</td>
+      <td>
+        ${!m.ready && !m.bundled ? `<button class="sm" onclick="downloadModel('${m.id}')">下载</button>` : ''}
+        ${m.ready && !m.bundled ? `<button class="sm danger" onclick="deleteModel('${m.id}')">删除</button>` : ''}
+        <button class="sm" onclick="viewModel('${m.id}')">详情</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+document.getElementById('model-filter').addEventListener('change', renderModels);
+
+async function downloadModel(id) {
+  toast('开始下载: ' + id);
+  const res = await api('/models/' + id + '/download', { method: 'POST' });
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const ev = JSON.parse(line.slice(6));
+          if (ev.pct !== undefined) toast(id + ': ' + ev.pct + '%', 1000);
+        } catch {}
+      }
+    }
+  }
+  toast('下载完成: ' + id);
+  loadModels();
+}
+
+async function deleteModel(id) {
+  if (!confirm('确认删除模型 ' + id + '？')) return;
+  await api('/models/' + id, { method: 'DELETE' });
+  toast('已删除: ' + id);
+  loadModels();
+}
+
+async function viewModel(id) {
+  const { data } = await apiJSON('/models/' + id);
+  alert(JSON.stringify(data, null, 2));
+}
+
+// --- 推理运行时 ---
+async function loadRuntime() {
+  const rtRes = await apiJSON('/api/runtime/status');
+  const modelsRes = await apiJSON('/models');
+  if (!rtRes.ok) { toast('运行时状态加载失败'); return; }
+  const rt = rtRes.data;
+  const models = modelsRes.ok ? modelsRes.data : [];
+
+  const llm = rt.llm;
+  document.getElementById('rt-llm-info').innerHTML = `<dl class="kv">
+    <dt>状态</dt><dd>${stateBadge(llm.state)}</dd>
+    <dt>当前模型</dt><dd>${llm.modelId || '—'}</dd>
+    <dt>端口</dt><dd>${llm.port || '—'}</dd>
+    <dt>上下文大小</dt><dd>${llm.contextSize || '—'}</dd>
+    <dt>并行数</dt><dd>${llm.parallel || '—'}</dd>
+    <dt>进行中请求</dt><dd>${llm.inFlight}</dd>
+    ${llm.error ? `<dt>错误</dt><dd style="color:var(--red)">${llm.error}</dd>` : ''}
+  </dl>`;
+
+  const wh = rt.whisper;
+  document.getElementById('rt-whisper-info').innerHTML = `<dl class="kv">
+    <dt>状态</dt><dd>${stateBadge(wh.state)}</dd>
+    <dt>当前模型</dt><dd>${wh.modelId || '—'}</dd>
+    <dt>端口</dt><dd>${wh.port || '—'}</dd>
+    <dt>进行中请求</dt><dd>${wh.inFlight}</dd>
+    ${wh.error ? `<dt>错误</dt><dd style="color:var(--red)">${wh.error}</dd>` : ''}
+  </dl>`;
+
+  const b = rt.binaries;
+  function binaryAction(info, kind) {
+    if (info.available) return '';
+    if (info.downloadable) return `<button class="sm" onclick="downloadBinary('${kind}')">下载</button>`;
+    if (info.installHint) return `<span style="font-size:11px;color:var(--yellow)">${info.installHint}</span>`;
+    return '<span style="font-size:11px;color:var(--text2)">不支持当前平台</span>';
+  }
+  document.getElementById('rt-binaries').innerHTML = `<table>
+    <thead><tr><th>引擎</th><th>版本</th><th>状态</th><th>来源</th><th>路径</th><th>操作</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>llama-server</td><td>${b.llamaServer.version}</td>
+        <td>${b.llamaServer.available ? '<span class="badge green">已安装</span>' : '<span class="badge red">未安装</span>'}</td>
+        <td>${b.llamaServer.source || '—'}</td>
+        <td style="font-size:11px;font-family:var(--mono)">${b.llamaServer.path || '—'}</td>
+        <td>${binaryAction(b.llamaServer, 'llama-server')}</td>
+      </tr>
+      <tr>
+        <td>whisper-server</td><td>${b.whisperServer.version || '—'}</td>
+        <td>${b.whisperServer.available ? '<span class="badge green">已安装</span>' : '<span class="badge red">未安装</span>'}</td>
+        <td>${b.whisperServer.source || '—'}</td>
+        <td style="font-size:11px;font-family:var(--mono)">${b.whisperServer.path || '—'}</td>
+        <td>${binaryAction(b.whisperServer, 'whisper-server')}</td>
+      </tr>
+    </tbody>
+  </table>`;
+
+  const llmModels = models.filter(m => m.ready && !['yunet','dinov2-small','nima','insightface-w600k-r50'].includes(m.id) && !m.id.startsWith('whisper'));
+  const whisperModels = models.filter(m => m.ready && m.id.startsWith('whisper'));
+
+  const llmSel = document.getElementById('rt-llm-model');
+  llmSel.innerHTML = llmModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
+  const whisperSel = document.getElementById('rt-whisper-model');
+  whisperSel.innerHTML = whisperModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
+}
+
+async function startLLM() {
+  const modelId = document.getElementById('rt-llm-model').value;
+  if (!modelId) { toast('请先选择模型'); return; }
+  const ctx = parseInt(document.getElementById('rt-llm-ctx').value) || 0;
+  const parallel = parseInt(document.getElementById('rt-llm-parallel').value) || 1;
+  toast('正在启动 LLM: ' + modelId);
+  const { data } = await apiPost('/api/runtime/llm/start', { modelId, contextSize: ctx, parallel });
+  if (data.error) toast('错误: ' + data.error);
+  else toast('LLM 已启动');
+  loadRuntime();
+}
+
+async function stopLLM() {
+  await apiPost('/api/runtime/llm/stop', {});
+  toast('LLM 已停止');
+  loadRuntime();
+}
+
+async function startWhisper() {
+  const modelId = document.getElementById('rt-whisper-model').value;
+  if (!modelId) { toast('请先选择模型'); return; }
+  toast('正在启动 Whisper: ' + modelId);
+  const { data } = await apiPost('/api/runtime/whisper/start', { modelId });
+  if (data.error) toast('错误: ' + data.error);
+  else toast('Whisper 已启动');
+  loadRuntime();
+}
+
+async function stopWhisper() {
+  await apiPost('/api/runtime/whisper/stop', {});
+  toast('Whisper 已停止');
+  loadRuntime();
+}
+
+async function showLLMLogs() {
+  const box = document.getElementById('rt-llm-logs');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  if (box.style.display === 'block') {
+    const { data } = await apiJSON('/api/runtime/llm/logs');
+    box.textContent = (data.logs || []).join('\n') || '(暂无日志)';
+  }
+}
+
+async function showWhisperLogs() {
+  const box = document.getElementById('rt-whisper-logs');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  if (box.style.display === 'block') {
+    const { data } = await apiJSON('/api/runtime/whisper/logs');
+    box.textContent = (data.logs || []).join('\n') || '(暂无日志)';
+  }
+}
+
+async function downloadBinary(kind) {
+  toast('正在下载 ' + kind + '...');
+  const res = await api('/api/binaries/' + kind + '/download', { method: 'POST' });
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        try {
+          const ev = JSON.parse(line.slice(6));
+          if (ev.pct !== undefined) toast(kind + ': ' + ev.pct + '%', 1200);
+          if (ev.ok !== undefined) toast(ev.ok ? kind + ' 安装完成!' : '错误: ' + ev.error);
+        } catch {}
+      }
+    }
+  }
+  loadRuntime();
+}
+
+// --- 请求队列 ---
+async function loadQueue() {
+  const res = await apiJSON('/api/queue/status');
+  if (!res.ok) { toast('队列状态加载失败'); return; }
+  const qs = res.data;
+
+  document.getElementById('q-status').innerHTML = `<h3>队列状态</h3><dl class="kv">
+    <dt>LLM 排队中</dt><dd>${qs.llmQueue.pending}</dd>
+    <dt>LLM 当前模型</dt><dd>${qs.llmQueue.currentModel || '—'}</dd>
+    <dt>LLM 已处理批次</dt><dd>${qs.llmQueue.batchServed}</dd>
+    <dt>Whisper 排队中</dt><dd>${qs.whisperQueue.pending}</dd>
+    <dt>Whisper 当前模型</dt><dd>${qs.whisperQueue.currentModel || '—'}</dd>
+  </dl>`;
+}
+
+async function updateQueueConfig() {
+  const body = {};
+  const v = (id) => { const x = parseInt(document.getElementById(id).value); return isNaN(x) ? undefined : x; };
+  const mx = v('q-max'); if (mx !== undefined) body.maxQueueSize = mx;
+  const idle = v('q-idle'); if (idle !== undefined) body.idleTimeoutSec = idle;
+  const wait = v('q-wait'); if (wait !== undefined) body.maxWaitTimeSec = wait;
+  const batch = v('q-batch'); if (batch !== undefined) body.maxBatchBeforeSwitch = batch;
+  await apiPost('/api/queue/config', body);
+  toast('配置已保存');
+}
+
+// --- 对话测试 ---
+let chatHistory = [];
+async function loadChatModels() {
+  const res = await apiJSON('/v1/models');
+  const sel = document.getElementById('chat-model');
+  if (!res.ok) { sel.innerHTML = '<option value="">加载失败</option>'; return; }
+  const llmModels = (res.data.data || []).filter(m => m.meta?.kind === 'llm');
+  sel.innerHTML = llmModels.map(m => `<option value="${m.id}">${m.id}</option>`).join('') || '<option value="">暂无可用模型</option>';
+}
+
+function clearChat() {
+  chatHistory = [];
+  document.getElementById('chat-messages').innerHTML = '';
+}
+
+function appendChatMsg(role, content) {
+  const roleLabel = role === 'user' ? '用户' : '助手';
+  const el = document.createElement('div');
+  el.className = 'chat-msg ' + role;
+  el.innerHTML = `<div class="role">${roleLabel}</div><div class="content"></div>`;
+  el.querySelector('.content').textContent = content;
+  const box = document.getElementById('chat-messages');
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+  return el.querySelector('.content');
+}
+
+const chatParamDefaults = { temperature: 0.8, top_p: 0.95, top_k: 40, min_p: 0.05, max_tokens: '', repeat_penalty: 1.0, presence_penalty: 0, frequency_penalty: 0, seed: '', stop: '' };
+
+function resetChatParams() {
+  for (const [k, v] of Object.entries(chatParamDefaults)) {
+    document.getElementById('cp-' + k).value = v;
+  }
+}
+
+function getChatParams() {
+  const params = {};
+  const f = (id) => { const v = document.getElementById('cp-' + id).value.trim(); return v === '' ? null : Number(v); };
+  const t = f('temperature'); if (t !== null) params.temperature = t;
+  const tp = f('top_p'); if (tp !== null) params.top_p = tp;
+  const tk = f('top_k'); if (tk !== null) params.top_k = tk;
+  const mp = f('min_p'); if (mp !== null) params.min_p = mp;
+  const mt = f('max_tokens'); if (mt !== null) params.max_tokens = mt;
+  const rp = f('repeat_penalty'); if (rp !== null) params.repeat_penalty = rp;
+  const pp = f('presence_penalty'); if (pp !== null) params.presence_penalty = pp;
+  const fp = f('frequency_penalty'); if (fp !== null) params.frequency_penalty = fp;
+  const sd = f('seed'); if (sd !== null) params.seed = sd;
+  const stopRaw = document.getElementById('cp-stop').value.trim();
+  if (stopRaw) {
+    try { params.stop = JSON.parse(stopRaw); } catch { params.stop = [stopRaw]; }
+  }
+  return params;
+}
+
+function renderChatContent(el, thinking, content, streaming) {
+  let details = el.querySelector('.thinking-block');
+  let pre = details?.querySelector('pre');
+  let span = el.querySelector('.content-text');
+
+  if (thinking) {
+    if (!details) {
+      el.innerHTML = '';
+      details = document.createElement('details');
+      details.className = 'thinking-block';
+      details.open = true;
+      const summary = document.createElement('summary');
+      summary.textContent = '💭 思考中...';
+      summary.style.cssText = 'cursor:pointer;color:#888;font-size:0.85em;margin-bottom:4px;';
+      details.appendChild(summary);
+      pre = document.createElement('pre');
+      pre.style.cssText = 'white-space:pre-wrap;color:#999;font-size:0.85em;margin:4px 0 8px 0;max-height:200px;overflow-y:auto;';
+      details.appendChild(pre);
+      el.appendChild(details);
+    }
+    pre.textContent = thinking;
+    pre.scrollTop = pre.scrollHeight;
+    if (!streaming && content) {
+      details.open = false;
+      details.querySelector('summary').textContent = '💭 思考过程';
+    }
+  }
+
+  if (content) {
+    if (!span) {
+      span = document.createElement('span');
+      span.className = 'content-text';
+      el.appendChild(span);
+    }
+    span.textContent = content;
+  }
+
+  const placeholder = el.querySelector('.chat-placeholder');
+  if (!thinking && !content) {
+    if (!placeholder) {
+      const p = document.createElement('span');
+      p.className = 'chat-placeholder';
+      p.style.cssText = 'color:var(--text2);font-size:12px';
+      p.textContent = '等待响应...';
+      el.appendChild(p);
+    }
+  } else if (placeholder) {
+    placeholder.remove();
+  }
+}
+
+let chatSending = false;
+async function sendChat() {
+  if (chatSending) return;
+  const input = document.getElementById('chat-input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  const model = document.getElementById('chat-model').value;
+  if (!model) { toast('请先选择模型'); return; }
+
+  chatSending = true;
+  input.value = '';
+  const thinking = document.getElementById('chat-thinking').checked;
+  chatHistory.push({ role: 'user', content: msg });
+  appendChatMsg('user', msg);
+
+  const contentEl = appendChatMsg('assistant', '');
+  const stream = document.getElementById('chat-stream').checked;
+
+  document.getElementById('chat-send').disabled = true;
+  try {
+    const body = { model, messages: chatHistory, stream, chat_template_kwargs: { enable_thinking: thinking }, ...getChatParams() };
+    const res = await api('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      contentEl.textContent = '错误: ' + (err.error?.message || JSON.stringify(err));
+      return;
+    }
+
+    if (stream) {
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', thinking = '', content = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+          try {
+            const chunk = JSON.parse(line.slice(6));
+            const d = chunk.choices?.[0]?.delta;
+            if (d?.reasoning_content) thinking += d.reasoning_content;
+            if (d?.content) content += d.content;
+            renderChatContent(contentEl, thinking, content, true);
+            document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight;
+          } catch {}
+        }
+      }
+      renderChatContent(contentEl, thinking, content, false);
+      chatHistory.push({ role: 'assistant', content: content || thinking });
+    } else {
+      const data = await res.json();
+      const m = data.choices?.[0]?.message;
+      const thinking = m?.reasoning_content || '';
+      const content = m?.content || '';
+      if (!thinking && !content) {
+        contentEl.textContent = JSON.stringify(data);
+      } else {
+        renderChatContent(contentEl, thinking, content, false);
+      }
+      chatHistory.push({ role: 'assistant', content: content || thinking });
+    }
+  } finally {
+    chatSending = false;
+    document.getElementById('chat-send').disabled = false;
+  }
+}
+
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!chatSending) sendChat();
+  }
+});
+
+// --- 语音转写 ---
+async function loadWhisperModels() {
+  const { ok, data } = await apiJSON('/models');
+  if (!ok) return;
+  const sel = document.getElementById('whisper-model');
+  sel.innerHTML = '';
+  (data || []).filter(m => m.id && m.id.startsWith('whisper') && m.ready).forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.id;
+    sel.appendChild(opt);
+  });
+  if (!sel.options.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '无可用 Whisper 模型';
+    sel.appendChild(opt);
+  }
+  refreshWhisperStatus();
+}
+
+async function refreshWhisperStatus() {
+  const { ok, data } = await apiJSON('/api/runtime/status');
+  const badge = document.getElementById('whisper-status-badge');
+  if (!ok) { badge.innerHTML = ''; return; }
+  const ws = data.whisper || {};
+  const stateMap = { idle: ['空闲', 'gray'], starting: ['启动中', 'yellow'], ready: ['就绪', 'green'], stopping: ['停止中', 'yellow'], error: ['错误', 'red'] };
+  const [label, cls] = stateMap[ws.state] || [ws.state, 'gray'];
+  let html = `<span class="badge ${cls}">${label}</span>`;
+  if (ws.modelId) html += `<span style="font-size:12px;color:var(--text2);margin-left:4px">${ws.modelId}</span>`;
+  badge.innerHTML = html;
+}
+
+async function startWhisperRuntime() {
+  const model = document.getElementById('whisper-model').value;
+  if (!model) { toast('请先选择 Whisper 模型'); return; }
+  const { ok, data } = await apiJSON('/api/runtime/whisper/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ modelId: model })
+  });
+  if (!ok) { toast('启动失败: ' + JSON.stringify(data)); return; }
+  toast('Whisper 运行时已启动');
+  refreshWhisperStatus();
+}
+
+let whisperSending = false;
+async function transcribeAudio() {
+  if (whisperSending) return;
+  const fileInput = document.getElementById('whisper-file');
+  if (!fileInput.files.length) { toast('请选择音频文件'); return; }
+
+  const model = document.getElementById('whisper-model').value;
+  if (!model) { toast('请先选择模型'); return; }
+
+  whisperSending = true;
+  document.getElementById('whisper-send').disabled = true;
+  document.getElementById('whisper-result-card').style.display = 'block';
+  document.getElementById('whisper-result').textContent = '转写中...';
+  document.getElementById('whisper-meta').textContent = '';
+
+  try {
+    const formData = new FormData();
+    formData.append('file', fileInput.files[0]);
+    formData.append('model', model);
+    const lang = document.getElementById('whisper-lang').value;
+    if (lang) formData.append('language', lang);
+    if (document.getElementById('whisper-translate').checked) {
+      formData.append('response_format', 'json');
+    }
+
+    const res = await api('/v1/audio/transcriptions', {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      document.getElementById('whisper-result').textContent = '错误: ' + (err.error?.message || err.error || res.status);
+      return;
+    }
+
+    const data = await res.json().catch(async () => ({ text: await res.text() }));
+    document.getElementById('whisper-result').textContent = data.text || JSON.stringify(data, null, 2);
+    const meta = [];
+    if (data.language) meta.push('语言: ' + data.language);
+    if (data.duration) meta.push('时长: ' + data.duration.toFixed(1) + 's');
+    document.getElementById('whisper-meta').textContent = meta.join('  |  ');
+  } catch (err) {
+    document.getElementById('whisper-result').textContent = '请求失败: ' + err.message;
+  } finally {
+    whisperSending = false;
+    document.getElementById('whisper-send').disabled = false;
+  }
+}
+
+document.getElementById('whisper-file').addEventListener('change', () => {
+  const f = document.getElementById('whisper-file').files[0];
+  const info = document.getElementById('whisper-upload-info');
+  if (f) {
+    const sizeMB = (f.size / 1024 / 1024).toFixed(1);
+    info.textContent = `${f.name} (${sizeMB} MB)`;
+  } else {
+    info.textContent = '';
+  }
+});
+
+// --- 接口调试 ---
+const ENDPOINTS = [
+  { method: 'GET', path: '/status', desc: '守护进程状态' },
+  { method: 'GET', path: '/hardware', desc: '硬件检测信息' },
+  { method: 'GET', path: '/models', desc: '列出所有模型', params: [{ name: 'app', type: 'text', placeholder: '如 clipiq', query: true }] },
+  { method: 'GET', path: '/models/{id}', desc: '查询单个模型', params: [{ name: 'id', type: 'text', placeholder: '模型 ID', path: true }] },
+  { method: 'POST', path: '/models/{id}/download', desc: '下载模型 (SSE 进度)', params: [{ name: 'id', type: 'text', placeholder: '模型 ID', path: true }], sse: true },
+  { method: 'POST', path: '/models/{id}/cancel-download', desc: '取消下载', params: [{ name: 'id', type: 'text', placeholder: '模型 ID', path: true }] },
+  { method: 'GET', path: '/models/{id}/path', desc: '获取模型文件路径', params: [{ name: 'id', type: 'text', placeholder: '模型 ID', path: true }] },
+  { method: 'DELETE', path: '/models/{id}', desc: '删除模型文件', params: [{ name: 'id', type: 'text', placeholder: '模型 ID', path: true }] },
+  { method: 'GET', path: '/models/recommended', desc: '按适配度排序的模型', params: [{ name: 'app', type: 'text', placeholder: '如 clipiq', query: true }] },
+  { method: 'POST', path: '/models/{id}/recompute-fit', desc: '重新计算适配度', params: [{ name: 'id', type: 'text', placeholder: '模型 ID', path: true }, { name: 'contextSize', type: 'number', placeholder: '32768', body: true }] },
+  { method: 'POST', path: '/config', desc: '设置偏好', params: [{ name: 'preferMirror', type: 'text', placeholder: 'hf-mirror / huggingface', body: true }] },
+  { method: 'GET', path: '/v1/models', desc: 'OpenAI 格式模型列表' },
+  { method: 'POST', path: '/v1/chat/completions', desc: '对话补全', params: [
+    { name: 'model', type: 'text', placeholder: '模型 ID', body: true },
+    { name: 'messages', type: 'textarea', placeholder: '[{"role":"user","content":"你好"}]', body: true, json: true },
+    { name: 'stream', type: 'checkbox', body: true }
+  ], sse: true },
+  { method: 'POST', path: '/v1/audio/transcriptions', desc: 'Whisper 语音转写 (multipart)', params: [
+    { name: 'model', type: 'text', placeholder: 'whisper-large-v3-turbo', body: true },
+    { name: 'file', type: 'file', body: true }
+  ], multipart: true },
+  { method: 'GET', path: '/api/runtime/status', desc: '运行时状态 (LLM + Whisper)' },
+  { method: 'POST', path: '/api/runtime/llm/start', desc: '启动 LLM 运行时', params: [
+    { name: 'modelId', type: 'text', placeholder: '模型 ID', body: true },
+    { name: 'contextSize', type: 'number', placeholder: '自动', body: true },
+    { name: 'parallel', type: 'number', placeholder: '1', body: true }
+  ]},
+  { method: 'POST', path: '/api/runtime/llm/stop', desc: '停止 LLM 运行时' },
+  { method: 'POST', path: '/api/runtime/whisper/start', desc: '启动 Whisper 运行时', params: [
+    { name: 'modelId', type: 'text', placeholder: '模型 ID', body: true }
+  ]},
+  { method: 'POST', path: '/api/runtime/whisper/stop', desc: '停止 Whisper 运行时' },
+  { method: 'GET', path: '/api/runtime/llm/logs', desc: 'LLM 进程日志' },
+  { method: 'GET', path: '/api/runtime/whisper/logs', desc: 'Whisper 进程日志' },
+  { method: 'GET', path: '/api/queue/status', desc: '队列状态' },
+  { method: 'POST', path: '/api/queue/config', desc: '更新队列配置', params: [
+    { name: 'maxQueueSize', type: 'number', placeholder: '100', body: true },
+    { name: 'idleTimeoutSec', type: 'number', placeholder: '600', body: true },
+    { name: 'maxWaitTimeSec', type: 'number', placeholder: '300', body: true },
+    { name: 'maxBatchBeforeSwitch', type: 'number', placeholder: '10', body: true }
+  ]},
+  { method: 'GET', path: '/api/binaries/status', desc: '推理引擎状态' },
+  { method: 'POST', path: '/api/binaries/llama-server/download', desc: '下载 llama-server (SSE)', sse: true },
+  { method: 'POST', path: '/api/binaries/whisper-server/download', desc: '下载 whisper-server (SSE)', sse: true },
+];
+
+function buildAPIExplorer() {
+  const container = document.getElementById('api-endpoints');
+  ENDPOINTS.forEach((ep, i) => {
+    const card = document.createElement('div');
+    card.className = 'endpoint-card';
+    card.innerHTML = `
+      <div class="endpoint-header" onclick="this.nextElementSibling.classList.toggle('open')">
+        <span class="endpoint-method ${ep.method}">${ep.method}</span>
+        <span class="endpoint-path">${ep.path}</span>
+        <span class="endpoint-desc">${ep.desc}</span>
+      </div>
+      <div class="endpoint-body" id="ep-body-${i}">
+        ${(ep.params||[]).map(p => {
+          if (p.type === 'textarea') return `<label>${p.name}</label><textarea id="ep-${i}-${p.name}" placeholder="${p.placeholder||''}" rows="3"></textarea>`;
+          if (p.type === 'checkbox') return `<label><input type="checkbox" id="ep-${i}-${p.name}"> ${p.name}</label>`;
+          if (p.type === 'file') return `<label>${p.name}</label><input type="file" id="ep-${i}-${p.name}">`;
+          return `<label>${p.name}</label><input type="${p.type}" id="ep-${i}-${p.name}" placeholder="${p.placeholder||''}">`;
+        }).join('')}
+        <div style="margin-top:10px"><button onclick="execEndpoint(${i})">执行</button></div>
+        <div class="endpoint-result" id="ep-result-${i}"></div>
+      </div>`;
+    container.appendChild(card);
+  });
+}
+
+async function execEndpoint(i) {
+  const ep = ENDPOINTS[i];
+  const resultEl = document.getElementById('ep-result-' + i);
+  resultEl.innerHTML = '<div class="status" style="color:var(--yellow)">请求中...</div>';
+
+  let path = ep.path;
+  let query = [];
+  let bodyObj = {};
+  let hasBody = false;
+
+  (ep.params || []).forEach(p => {
+    const el = document.getElementById('ep-' + i + '-' + p.name);
+    if (!el) return;
+    let val;
+    if (p.type === 'checkbox') val = el.checked;
+    else if (p.type === 'file') return;
+    else if (p.type === 'number') { val = el.value ? parseInt(el.value) : undefined; if (val === undefined || isNaN(val)) return; }
+    else { val = el.value.trim(); if (!val) return; }
+
+    if (p.path) path = path.replace('{' + p.name + '}', val);
+    else if (p.query) query.push(p.name + '=' + encodeURIComponent(val));
+    else if (p.body) {
+      if (p.json) { try { bodyObj[p.name] = JSON.parse(val); } catch { bodyObj[p.name] = val; } }
+      else bodyObj[p.name] = val;
+      hasBody = true;
+    }
+  });
+
+  if (query.length) path += '?' + query.join('&');
+
+  if (ep.multipart) {
+    const fd = new FormData();
+    (ep.params || []).forEach(p => {
+      const el = document.getElementById('ep-' + i + '-' + p.name);
+      if (!el) return;
+      if (p.type === 'file' && el.files[0]) fd.append(p.name, el.files[0]);
+      else if (el.value) fd.append(p.name, el.value);
+    });
+    try {
+      const res = await api(path, { method: ep.method, body: fd });
+      const data = await res.json();
+      resultEl.innerHTML = `<div class="status ${res.ok?'ok':'err'}">HTTP ${res.status}</div><pre>${JSON.stringify(data, null, 2)}</pre>`;
+    } catch (e) {
+      resultEl.innerHTML = `<div class="status err">错误: ${e.message}</div>`;
+    }
+    return;
+  }
+
+  if (ep.sse && ep.method === 'POST') {
+    try {
+      const opts = { method: 'POST' };
+      if (hasBody) {
+        opts.headers = { 'Content-Type': 'application/json' };
+        opts.body = JSON.stringify(bodyObj);
+      }
+      const res = await api(path, opts);
+      if (!res.ok) {
+        const data = await res.json();
+        resultEl.innerHTML = `<div class="status err">HTTP ${res.status}</div><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        return;
+      }
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '', output = '';
+      resultEl.innerHTML = '<div class="status ok">流式接收中...</div><pre></pre>';
+      const pre = resultEl.querySelector('pre');
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          output += line + '\n';
+          pre.textContent = output;
+          pre.scrollTop = pre.scrollHeight;
+        }
+      }
+      resultEl.querySelector('.status').textContent = '完成';
+    } catch (e) {
+      resultEl.innerHTML = `<div class="status err">错误: ${e.message}</div>`;
+    }
+    return;
+  }
+
+  try {
+    const opts = { method: ep.method };
+    if (hasBody && (ep.method === 'POST' || ep.method === 'DELETE')) {
+      opts.headers = { 'Content-Type': 'application/json' };
+      opts.body = JSON.stringify(bodyObj);
+    }
+    const res = await api(path, opts);
+    const text = await res.text();
+    let display;
+    try { display = JSON.stringify(JSON.parse(text), null, 2); } catch { display = text; }
+    resultEl.innerHTML = `<div class="status ${res.ok?'ok':'err'}">HTTP ${res.status}</div><pre>${display}</pre>`;
+  } catch (e) {
+    resultEl.innerHTML = `<div class="status err">错误: ${e.message}</div>`;
+  }
+}
+
+// --- 初始化 ---
+buildAPIExplorer();
+loadDashboard();
+</script>
+</body>
+</html>

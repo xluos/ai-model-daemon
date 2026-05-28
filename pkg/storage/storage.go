@@ -42,6 +42,11 @@ func TokenPath() string {
 	return filepath.Join(Dir(), ".daemon.token")
 }
 
+// HTTPAddrPath returns the file path storing the daemon's HTTP listen address.
+func HTTPAddrPath() string {
+	return filepath.Join(Dir(), ".daemon.http")
+}
+
 // ModelDir returns the directory for a specific model.
 func ModelDir(modelID string) string {
 	return filepath.Join(Dir(), modelID)
