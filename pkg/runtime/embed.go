@@ -15,8 +15,11 @@ func (bm *BinaryManager) extractEmbedded() {
 		binName   string
 	}{
 		{"resources/whisper-server", "whisper-server"},
+		{"resources/ocr_server.py", "ocr_server.py"},
+		{"resources/faster_whisper_server.py", "faster_whisper_server.py"},
 	}
 
+	os.MkdirAll(bm.binDir, 0755)
 	for _, e := range entries {
 		data, err := embeddedResources.ReadFile(e.embedPath)
 		if err != nil || len(data) == 0 {
@@ -24,9 +27,8 @@ func (bm *BinaryManager) extractEmbedded() {
 		}
 		dest := filepath.Join(bm.binDir, e.binName)
 		if _, err := os.Stat(dest); err == nil {
-			return
+			continue
 		}
-		os.MkdirAll(bm.binDir, 0755)
 		os.WriteFile(dest, data, 0755)
 	}
 }

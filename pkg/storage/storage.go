@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // Dir returns the shared model storage directory.
@@ -64,17 +65,45 @@ func ModelFilePath(modelID, filename string) string {
 
 // IsFileReady checks if a model file exists and has expected size (within 5% tolerance).
 // If expectedBytes is 0, only checks that the file exists and is non-empty.
+// For tar archives, also considers the model ready if the extracted directory exists.
 func IsFileReady(modelID, filename string, expectedBytes int64) bool {
 	p := ModelFilePath(modelID, filename)
 	info, err := os.Stat(p)
-	if err != nil {
-		return false
+	if err == nil {
+		size := info.Size()
+		if expectedBytes <= 0 {
+			return size > 0
+		}
+		low := int64(float64(expectedBytes) * 0.95)
+		high := int64(float64(expectedBytes) * 1.05)
+		if size >= low && size <= high {
+			return true
+		}
 	}
-	size := info.Size()
-	if expectedBytes <= 0 {
-		return size > 0
+
+	// For tar archives, check if the extracted directory exists.
+	if dir := ExtractedDirPath(modelID, filename); dir != "" {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return true
+		}
 	}
-	low := int64(float64(expectedBytes) * 0.95)
-	high := int64(float64(expectedBytes) * 1.05)
-	return size >= low && size <= high
+	return false
+}
+
+// ExtractedDirPath returns the expected extraction directory for a tar archive,
+// or empty string if the filename is not a tar archive.
+func ExtractedDirPath(modelID, filename string) string {
+	lower := strings.ToLower(filename)
+	var base string
+	switch {
+	case strings.HasSuffix(lower, ".tar.gz"):
+		base = strings.TrimSuffix(filename, filename[len(filename)-7:])
+	case strings.HasSuffix(lower, ".tgz"):
+		base = strings.TrimSuffix(filename, filename[len(filename)-4:])
+	case strings.HasSuffix(lower, ".tar"):
+		base = strings.TrimSuffix(filename, filename[len(filename)-4:])
+	default:
+		return ""
+	}
+	return filepath.Join(Dir(), modelID, base)
 }

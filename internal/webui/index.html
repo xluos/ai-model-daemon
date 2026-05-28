@@ -101,6 +101,7 @@ textarea{resize:vertical;min-height:60px}
     <a href="#queue" data-page="queue">请求队列</a>
     <a href="#chat" data-page="chat">对话测试</a>
     <a href="#whisper" data-page="whisper">语音转写</a>
+    <a href="#ocr" data-page="ocr">OCR 测试</a>
     <a href="#api" data-page="api">接口调试</a>
     <div class="spacer"></div>
     <div class="ver" id="version-info">ai-model-daemon</div>
@@ -119,6 +120,10 @@ textarea{resize:vertical;min-height:60px}
         <div class="card" id="dash-whisper"></div>
       </div>
       <div class="card-row">
+        <div class="card" id="dash-faster-whisper"></div>
+        <div class="card" id="dash-ocr"></div>
+      </div>
+      <div class="card-row">
         <div class="card" id="dash-binaries"></div>
         <div class="card" id="dash-queue"></div>
       </div>
@@ -132,6 +137,8 @@ textarea{resize:vertical;min-height:60px}
           <option value="">全部</option>
           <option value="llm">LLM 语言模型</option>
           <option value="whisper">Whisper 语音</option>
+          <option value="faster-whisper">faster-whisper</option>
+          <option value="ocr">OCR 文字识别</option>
           <option value="onnx">ONNX / 其他</option>
         </select>
         <button onclick="loadModels()">刷新</button>
@@ -169,6 +176,30 @@ textarea{resize:vertical;min-height:60px}
           </div>
           <div style="margin-top:12px"><button class="sm" onclick="showWhisperLogs()">查看日志</button></div>
           <div id="rt-whisper-logs" class="log-box" style="display:none;margin-top:8px"></div>
+        </div>
+      </div>
+      <div class="card-row">
+        <div class="card">
+          <h3>faster-whisper 运行时 (Python)</h3>
+          <div id="rt-fw-info"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+            <div><label style="font-size:12px;color:var(--text2)">模型</label><select id="rt-fw-model" style="width:180px"></select></div>
+            <button onclick="startFW()">启动</button>
+            <button class="danger" onclick="stopFW()">停止</button>
+          </div>
+          <div style="margin-top:12px"><button class="sm" onclick="showFWLogs()">查看日志</button></div>
+          <div id="rt-fw-logs" class="log-box" style="display:none;margin-top:8px"></div>
+        </div>
+        <div class="card">
+          <h3>OCR 运行时 (PaddleOCR)</h3>
+          <div id="rt-ocr-info"></div>
+          <div style="margin-top:10px;display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+            <div><label style="font-size:12px;color:var(--text2)">模型</label><select id="rt-ocr-model" style="width:180px"></select></div>
+            <button onclick="startOCR()">启动</button>
+            <button class="danger" onclick="stopOCR()">停止</button>
+          </div>
+          <div style="margin-top:12px"><button class="sm" onclick="showOCRLogs()">查看日志</button></div>
+          <div id="rt-ocr-logs" class="log-box" style="display:none;margin-top:8px"></div>
         </div>
       </div>
       <div class="card">
@@ -255,6 +286,10 @@ textarea{resize:vertical;min-height:60px}
     <div class="page" id="page-whisper">
       <h2>语音转写</h2>
       <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="whisper-backend" style="width:auto">
+          <option value="whisper">whisper.cpp</option>
+          <option value="faster-whisper">faster-whisper</option>
+        </select>
         <select id="whisper-model" style="width:auto"></select>
         <button class="sm" onclick="startWhisperRuntime()">启动运行时</button>
         <span id="whisper-status-badge" style="font-size:12px"></span>
@@ -279,6 +314,33 @@ textarea{resize:vertical;min-height:60px}
         <h3>转写结果</h3>
         <pre id="whisper-result" style="white-space:pre-wrap;font-size:13px;line-height:1.6;margin-top:8px;max-height:400px;overflow-y:auto"></pre>
         <div id="whisper-meta" style="font-size:11px;color:var(--text2);margin-top:8px"></div>
+      </div>
+    </div>
+
+    <!-- OCR 测试 -->
+    <div class="page" id="page-ocr">
+      <h2>OCR 文字识别</h2>
+      <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="ocr-model-sel" style="width:auto"></select>
+        <button class="sm" onclick="startOCRRuntime()">启动运行时</button>
+        <span id="ocr-status-badge" style="font-size:12px"></span>
+      </div>
+      <div class="card" style="margin-bottom:12px">
+        <h3>上传图片</h3>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <input type="file" id="ocr-file" accept="image/*,.png,.jpg,.jpeg,.bmp,.tiff,.webp" style="font-size:12px;width:auto">
+          <button onclick="runOCR()" id="ocr-send">识别</button>
+        </div>
+        <div id="ocr-upload-info" style="font-size:12px;color:var(--text2);margin-top:6px"></div>
+        <div id="ocr-preview" style="margin-top:8px;max-height:200px;overflow:hidden"></div>
+      </div>
+      <div class="card" id="ocr-result-card" style="display:none">
+        <h3>识别结果</h3>
+        <div id="ocr-text-result" style="font-size:14px;line-height:1.8;margin-top:8px;white-space:pre-wrap"></div>
+        <details style="margin-top:12px">
+          <summary style="cursor:pointer;font-size:12px;color:var(--text2)">原始 JSON</summary>
+          <pre id="ocr-json-result" style="font-size:11px;margin-top:4px;max-height:300px;overflow-y:auto;background:#0a0c12;padding:8px;border-radius:var(--radius);color:var(--text2)"></pre>
+        </details>
       </div>
     </div>
 
@@ -365,6 +427,7 @@ document.querySelectorAll('.sidebar a[data-page]').forEach(a => {
     if (a.dataset.page === 'queue') loadQueue();
     if (a.dataset.page === 'chat') loadChatModels();
     if (a.dataset.page === 'whisper') loadWhisperModels();
+    if (a.dataset.page === 'ocr') loadOCRModels();
   });
 });
 
@@ -419,6 +482,22 @@ async function loadDashboard() {
       <dt>进行中请求</dt><dd>${r.whisper.inFlight}</dd>
     </dl>`;
 
+    const fw = r['faster-whisper'] || { state:'idle', inFlight:0 };
+    document.getElementById('dash-faster-whisper').innerHTML = `<h3>faster-whisper 运行时</h3><dl class="kv">
+      <dt>状态</dt><dd>${stateBadge(fw.state)}</dd>
+      <dt>当前模型</dt><dd>${fw.modelId || '—'}</dd>
+      <dt>端口</dt><dd>${fw.port || '—'}</dd>
+      <dt>进行中请求</dt><dd>${fw.inFlight}</dd>
+    </dl>`;
+
+    const ocr = r['ocr'] || { state:'idle', inFlight:0 };
+    document.getElementById('dash-ocr').innerHTML = `<h3>OCR 运行时</h3><dl class="kv">
+      <dt>状态</dt><dd>${stateBadge(ocr.state)}</dd>
+      <dt>当前模型</dt><dd>${ocr.modelId || '—'}</dd>
+      <dt>端口</dt><dd>${ocr.port || '—'}</dd>
+      <dt>进行中请求</dt><dd>${ocr.inFlight}</dd>
+    </dl>`;
+
     const b = r.binaries;
     document.getElementById('dash-binaries').innerHTML = `<h3>推理引擎</h3><dl class="kv">
       <dt>llama-server</dt><dd>${b.llamaServer.available ? '<span class="badge green">已安装</span>' : '<span class="badge red">未安装</span>'} ${b.llamaServer.version||''}</dd>
@@ -468,11 +547,14 @@ const fitLabelMap = { perfect: '完美', good: '良好', marginal: '勉强', tig
 function renderModels() {
   const filter = document.getElementById('model-filter').value;
   const tbody = document.getElementById('models-tbody');
+  const onnxIds = ['yunet','dinov2-small','nima','insightface','insightface-w600k-r50'];
   const filtered = allModels.filter(m => {
     if (!filter) return true;
-    if (filter === 'whisper') return m.id.startsWith('whisper');
-    if (filter === 'llm') return !m.id.startsWith('whisper') && !['yunet','dinov2-small','nima','insightface-w600k-r50'].includes(m.id);
-    return ['yunet','dinov2-small','nima','insightface-w600k-r50'].includes(m.id);
+    if (filter === 'whisper') return m.id.startsWith('whisper-') && !m.id.startsWith('faster-whisper');
+    if (filter === 'faster-whisper') return m.id.startsWith('faster-whisper');
+    if (filter === 'ocr') return m.id.startsWith('ppocr');
+    if (filter === 'llm') return !m.id.startsWith('whisper') && !m.id.startsWith('faster-whisper') && !m.id.startsWith('ppocr') && !onnxIds.includes(m.id);
+    return onnxIds.includes(m.id);
   });
   tbody.innerHTML = filtered.map(m => {
     const status = m.ready ? '<span class="badge green">就绪</span>' :
@@ -595,13 +677,40 @@ async function loadRuntime() {
     </tbody>
   </table>`;
 
-  const llmModels = models.filter(m => m.ready && !['yunet','dinov2-small','nima','insightface-w600k-r50'].includes(m.id) && !m.id.startsWith('whisper'));
-  const whisperModels = models.filter(m => m.ready && m.id.startsWith('whisper'));
+  const onnxIds = ['yunet','dinov2-small','nima','insightface','insightface-w600k-r50'];
+  const llmModels = models.filter(m => m.ready && !onnxIds.includes(m.id) && !m.id.startsWith('whisper') && !m.id.startsWith('faster-whisper') && !m.id.startsWith('ppocr'));
+  const whisperModels = models.filter(m => m.ready && m.id.startsWith('whisper-') && !m.id.startsWith('faster-whisper'));
+  const fwModels = models.filter(m => m.ready && m.id.startsWith('faster-whisper'));
+  const ocrModels = models.filter(m => m.ready && m.id.startsWith('ppocr'));
 
   const llmSel = document.getElementById('rt-llm-model');
   llmSel.innerHTML = llmModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
   const whisperSel = document.getElementById('rt-whisper-model');
   whisperSel.innerHTML = whisperModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
+
+  // faster-whisper
+  const fw = rt['faster-whisper'] || { state:'idle', inFlight:0 };
+  document.getElementById('rt-fw-info').innerHTML = `<dl class="kv">
+    <dt>状态</dt><dd>${stateBadge(fw.state)}</dd>
+    <dt>当前模型</dt><dd>${fw.modelId || '—'}</dd>
+    <dt>端口</dt><dd>${fw.port || '—'}</dd>
+    <dt>进行中请求</dt><dd>${fw.inFlight}</dd>
+    ${fw.error ? `<dt>错误</dt><dd style="color:var(--red)">${fw.error}</dd>` : ''}
+  </dl>`;
+  const fwSel = document.getElementById('rt-fw-model');
+  fwSel.innerHTML = fwModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
+
+  // OCR
+  const ocrRt = rt['ocr'] || { state:'idle', inFlight:0 };
+  document.getElementById('rt-ocr-info').innerHTML = `<dl class="kv">
+    <dt>状态</dt><dd>${stateBadge(ocrRt.state)}</dd>
+    <dt>当前模型</dt><dd>${ocrRt.modelId || '—'}</dd>
+    <dt>端口</dt><dd>${ocrRt.port || '—'}</dd>
+    <dt>进行中请求</dt><dd>${ocrRt.inFlight}</dd>
+    ${ocrRt.error ? `<dt>错误</dt><dd style="color:var(--red)">${ocrRt.error}</dd>` : ''}
+  </dl>`;
+  const ocrSel = document.getElementById('rt-ocr-model');
+  ocrSel.innerHTML = ocrModels.map(m => `<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">暂无可用模型</option>';
 }
 
 async function startLLM() {
@@ -679,6 +788,48 @@ async function downloadBinary(kind) {
     }
   }
   loadRuntime();
+}
+
+// --- faster-whisper / OCR runtime controls ---
+async function startFW() {
+  const modelId = document.getElementById('rt-fw-model').value;
+  if (!modelId) { toast('请先选择模型'); return; }
+  toast('正在启动 faster-whisper: ' + modelId);
+  const { data } = await apiPost('/api/runtime/faster-whisper/start', { modelId });
+  if (data.error) toast('错误: ' + data.error); else toast('faster-whisper 已启动');
+  loadRuntime();
+}
+async function stopFW() {
+  await apiPost('/api/runtime/faster-whisper/stop', {});
+  toast('faster-whisper 已停止'); loadRuntime();
+}
+async function showFWLogs() {
+  const box = document.getElementById('rt-fw-logs');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  if (box.style.display === 'block') {
+    const { data } = await apiJSON('/api/runtime/faster-whisper/logs');
+    box.textContent = (data.logs || []).join('\n') || '(暂无日志)';
+  }
+}
+async function startOCR() {
+  const modelId = document.getElementById('rt-ocr-model').value;
+  if (!modelId) { toast('请先选择模型'); return; }
+  toast('正在启动 OCR: ' + modelId);
+  const { data } = await apiPost('/api/runtime/ocr/start', { modelId });
+  if (data.error) toast('错误: ' + data.error); else toast('OCR 已启动');
+  loadRuntime();
+}
+async function stopOCR() {
+  await apiPost('/api/runtime/ocr/stop', {});
+  toast('OCR 已停止'); loadRuntime();
+}
+async function showOCRLogs() {
+  const box = document.getElementById('rt-ocr-logs');
+  box.style.display = box.style.display === 'none' ? 'block' : 'none';
+  if (box.style.display === 'block') {
+    const { data } = await apiJSON('/api/runtime/ocr/logs');
+    box.textContent = (data.logs || []).join('\n') || '(暂无日志)';
+  }
 }
 
 // --- 请求队列 ---
@@ -899,9 +1050,21 @@ document.getElementById('chat-input').addEventListener('keydown', e => {
 async function loadWhisperModels() {
   const { ok, data } = await apiJSON('/models');
   if (!ok) return;
+  window._allWhisperPageModels = data || [];
+  updateWhisperModelList();
+  refreshWhisperStatus();
+}
+
+function updateWhisperModelList() {
+  const backend = document.getElementById('whisper-backend').value;
   const sel = document.getElementById('whisper-model');
   sel.innerHTML = '';
-  (data || []).filter(m => m.id && m.id.startsWith('whisper') && m.ready).forEach(m => {
+  const models = (window._allWhisperPageModels || []).filter(m => {
+    if (!m.ready) return false;
+    if (backend === 'faster-whisper') return m.id.startsWith('faster-whisper');
+    return m.id.startsWith('whisper-') && !m.id.startsWith('faster-whisper');
+  });
+  models.forEach(m => {
     const opt = document.createElement('option');
     opt.value = m.id;
     opt.textContent = m.id;
@@ -910,19 +1073,23 @@ async function loadWhisperModels() {
   if (!sel.options.length) {
     const opt = document.createElement('option');
     opt.value = '';
-    opt.textContent = '无可用 Whisper 模型';
+    opt.textContent = '无可用模型';
     sel.appendChild(opt);
   }
-  refreshWhisperStatus();
 }
+document.getElementById('whisper-backend').addEventListener('change', () => {
+  updateWhisperModelList();
+  refreshWhisperStatus();
+});
 
 async function refreshWhisperStatus() {
   const { ok, data } = await apiJSON('/api/runtime/status');
   const badge = document.getElementById('whisper-status-badge');
   if (!ok) { badge.innerHTML = ''; return; }
-  const ws = data.whisper || {};
+  const backend = document.getElementById('whisper-backend').value;
+  const ws = backend === 'faster-whisper' ? (data['faster-whisper'] || {}) : (data.whisper || {});
   const stateMap = { idle: ['空闲', 'gray'], starting: ['启动中', 'yellow'], ready: ['就绪', 'green'], stopping: ['停止中', 'yellow'], error: ['错误', 'red'] };
-  const [label, cls] = stateMap[ws.state] || [ws.state, 'gray'];
+  const [label, cls] = stateMap[ws.state] || [ws.state || 'idle', 'gray'];
   let html = `<span class="badge ${cls}">${label}</span>`;
   if (ws.modelId) html += `<span style="font-size:12px;color:var(--text2);margin-left:4px">${ws.modelId}</span>`;
   badge.innerHTML = html;
@@ -930,14 +1097,16 @@ async function refreshWhisperStatus() {
 
 async function startWhisperRuntime() {
   const model = document.getElementById('whisper-model').value;
-  if (!model) { toast('请先选择 Whisper 模型'); return; }
-  const { ok, data } = await apiJSON('/api/runtime/whisper/start', {
+  if (!model) { toast('请先选择模型'); return; }
+  const backend = document.getElementById('whisper-backend').value;
+  const endpoint = backend === 'faster-whisper' ? '/api/runtime/faster-whisper/start' : '/api/runtime/whisper/start';
+  const { ok, data } = await apiJSON(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ modelId: model })
   });
   if (!ok) { toast('启动失败: ' + JSON.stringify(data)); return; }
-  toast('Whisper 运行时已启动');
+  toast(backend + ' 运行时已启动');
   refreshWhisperStatus();
 }
 
@@ -966,7 +1135,9 @@ async function transcribeAudio() {
       formData.append('response_format', 'json');
     }
 
-    const res = await api('/v1/audio/transcriptions', {
+    const backend = document.getElementById('whisper-backend').value;
+    const transcribeUrl = backend === 'faster-whisper' ? '/v1/audio/transcriptions/faster' : '/v1/audio/transcriptions';
+    const res = await api(transcribeUrl, {
       method: 'POST',
       body: formData
     });
@@ -1001,6 +1172,119 @@ document.getElementById('whisper-file').addEventListener('change', () => {
     info.textContent = '';
   }
 });
+
+// --- OCR 测试 ---
+async function loadOCRModels() {
+  const { ok, data } = await apiJSON('/models');
+  if (!ok) return;
+  const sel = document.getElementById('ocr-model-sel');
+  sel.innerHTML = '';
+  (data || []).filter(m => m.id && m.id.startsWith('ppocr') && m.ready).forEach(m => {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.name || m.id;
+    sel.appendChild(opt);
+  });
+  if (!sel.options.length) {
+    const opt = document.createElement('option');
+    opt.value = '';
+    opt.textContent = '无可用 OCR 模型（请先下载）';
+    sel.appendChild(opt);
+  }
+  refreshOCRStatus();
+}
+
+async function refreshOCRStatus() {
+  const { ok, data } = await apiJSON('/api/runtime/status');
+  const badge = document.getElementById('ocr-status-badge');
+  if (!ok) { badge.innerHTML = ''; return; }
+  const ocr = data['ocr'] || {};
+  const stateMap = { idle:['空闲','gray'], starting:['启动中','yellow'], ready:['就绪','green'], stopping:['停止中','yellow'], error:['错误','red'] };
+  const [label, cls] = stateMap[ocr.state] || [ocr.state||'idle','gray'];
+  let html = `<span class="badge ${cls}">${label}</span>`;
+  if (ocr.modelId) html += `<span style="font-size:12px;color:var(--text2);margin-left:4px">${ocr.modelId}</span>`;
+  badge.innerHTML = html;
+}
+
+async function startOCRRuntime() {
+  const model = document.getElementById('ocr-model-sel').value;
+  if (!model) { toast('请先选择 OCR 模型'); return; }
+  toast('正在启动 OCR 运行时...');
+  const { ok, data } = await apiPost('/api/runtime/ocr/start', { modelId: model });
+  if (!ok) { toast('启动失败: ' + JSON.stringify(data)); return; }
+  toast('OCR 运行时已启动');
+  refreshOCRStatus();
+}
+
+document.getElementById('ocr-file').addEventListener('change', () => {
+  const f = document.getElementById('ocr-file').files[0];
+  const info = document.getElementById('ocr-upload-info');
+  const preview = document.getElementById('ocr-preview');
+  if (f) {
+    const sizeMB = (f.size / 1024 / 1024).toFixed(1);
+    info.textContent = `${f.name} (${sizeMB} MB)`;
+    if (f.type.startsWith('image/')) {
+      const url = URL.createObjectURL(f);
+      preview.innerHTML = `<img src="${url}" style="max-width:100%;max-height:200px;border-radius:var(--radius);border:1px solid var(--border)">`;
+    } else {
+      preview.innerHTML = '';
+    }
+  } else {
+    info.textContent = '';
+    preview.innerHTML = '';
+  }
+});
+
+let ocrSending = false;
+async function runOCR() {
+  if (ocrSending) return;
+  const fileInput = document.getElementById('ocr-file');
+  if (!fileInput.files.length) { toast('请选择图片文件'); return; }
+  const model = document.getElementById('ocr-model-sel').value;
+  if (!model) { toast('请先选择模型'); return; }
+
+  ocrSending = true;
+  document.getElementById('ocr-send').disabled = true;
+  document.getElementById('ocr-result-card').style.display = 'block';
+  document.getElementById('ocr-text-result').textContent = '识别中...';
+  document.getElementById('ocr-json-result').textContent = '';
+
+  try {
+    const file = fileInput.files[0];
+    const arrayBuf = await file.arrayBuffer();
+    const res = await api('/v1/ocr?model=' + encodeURIComponent(model), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: arrayBuf
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      document.getElementById('ocr-text-result').textContent = '错误: ' + (err.error?.message || err.error || res.status);
+      return;
+    }
+
+    const data = await res.json();
+    document.getElementById('ocr-json-result').textContent = JSON.stringify(data, null, 2);
+
+    if (Array.isArray(data) && data.length > 0) {
+      const lines = data.map(item => {
+        const conf = (item.confidence * 100).toFixed(1);
+        return `${item.text}  (${conf}%)`;
+      });
+      document.getElementById('ocr-text-result').textContent = lines.join('\n');
+    } else if (Array.isArray(data) && data.length === 0) {
+      document.getElementById('ocr-text-result').textContent = '(未识别到文字)';
+    } else {
+      document.getElementById('ocr-text-result').textContent = JSON.stringify(data, null, 2);
+    }
+  } catch (err) {
+    document.getElementById('ocr-text-result').textContent = '请求失败: ' + err.message;
+  } finally {
+    ocrSending = false;
+    document.getElementById('ocr-send').disabled = false;
+  }
+}
 
 // --- 接口调试 ---
 const ENDPOINTS = [
@@ -1048,6 +1332,24 @@ const ENDPOINTS = [
   { method: 'GET', path: '/api/binaries/status', desc: '推理引擎状态' },
   { method: 'POST', path: '/api/binaries/llama-server/download', desc: '下载 llama-server (SSE)', sse: true },
   { method: 'POST', path: '/api/binaries/whisper-server/download', desc: '下载 whisper-server (SSE)', sse: true },
+  { method: 'POST', path: '/v1/ocr', desc: 'OCR 文字识别 (图片 body)', params: [
+    { name: 'model', type: 'text', placeholder: 'ppocr-v4-mobile', query: true },
+    { name: 'file', type: 'file', body: true }
+  ], multipart: false, binary: true },
+  { method: 'POST', path: '/v1/audio/transcriptions/faster', desc: 'faster-whisper 语音转写 (multipart)', params: [
+    { name: 'model', type: 'text', placeholder: 'faster-whisper-large-v3', body: true },
+    { name: 'file', type: 'file', body: true }
+  ], multipart: true },
+  { method: 'POST', path: '/api/runtime/faster-whisper/start', desc: '启动 faster-whisper', params: [
+    { name: 'modelId', type: 'text', placeholder: '模型 ID', body: true }
+  ]},
+  { method: 'POST', path: '/api/runtime/faster-whisper/stop', desc: '停止 faster-whisper' },
+  { method: 'GET', path: '/api/runtime/faster-whisper/logs', desc: 'faster-whisper 进程日志' },
+  { method: 'POST', path: '/api/runtime/ocr/start', desc: '启动 OCR 运行时', params: [
+    { name: 'modelId', type: 'text', placeholder: '模型 ID', body: true }
+  ]},
+  { method: 'POST', path: '/api/runtime/ocr/stop', desc: '停止 OCR 运行时' },
+  { method: 'GET', path: '/api/runtime/ocr/logs', desc: 'OCR 进程日志' },
 ];
 
 function buildAPIExplorer() {

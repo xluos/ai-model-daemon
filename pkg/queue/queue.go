@@ -36,54 +36,64 @@ const (
 type Request struct {
 	ID       string
 	ModelID  string
-	Kind     string // "llm" or "whisper"
+	Kind     string
 	Priority Priority
 	ClientID string
 
 	Ctx    context.Context
 	Cancel context.CancelFunc
 
-	Ready chan struct{} // closed when the request can be served
-	Err   error        // set if the request is rejected
+	Ready chan struct{}
+	Err   error
 
 	enqueuedAt time.Time
 }
 
+type QueueInfo struct {
+	Pending        int            `json:"pending"`
+	PendingByModel map[string]int `json:"pendingByModel"`
+	CurrentModel   string         `json:"currentModel"`
+	BatchServed    int            `json:"batchServed"`
+}
+
 type Status struct {
+	Queues map[string]QueueInfo `json:"-"`
+
+	// Backward-compatible fields, populated from Queues.
 	LLMQueue     QueueInfo `json:"llmQueue"`
 	WhisperQueue QueueInfo `json:"whisperQueue"`
 }
 
-type QueueInfo struct {
-	Pending       int               `json:"pending"`
-	PendingByModel map[string]int   `json:"pendingByModel"`
-	CurrentModel  string            `json:"currentModel"`
-	BatchServed   int               `json:"batchServed"`
+type kindState struct {
+	queue     []*Request
+	batch     int
+	idleTimer *time.Timer
 }
 
 type Scheduler struct {
-	mu      sync.Mutex
-	config  Config
-	rtm     *runtime.RuntimeManager
-
-	llmQueue     []*Request
-	whisperQueue []*Request
-	llmBatch     int
-	whisperBatch int
-
-	llmIdle     *time.Timer
-	whisperIdle *time.Timer
-
+	mu     sync.Mutex
+	config Config
+	rtm    *runtime.RuntimeManager
+	kinds  map[string]*kindState
 	closed chan struct{}
 }
 
 func NewScheduler(rtm *runtime.RuntimeManager, cfg Config) *Scheduler {
-	s := &Scheduler{
+	return &Scheduler{
 		config: cfg,
 		rtm:    rtm,
+		kinds:  make(map[string]*kindState),
 		closed: make(chan struct{}),
 	}
-	return s
+}
+
+func (s *Scheduler) getKind(kind string) *kindState {
+	ks, ok := s.kinds[kind]
+	if !ok {
+		ks = &kindState{}
+		s.kinds[kind] = ks
+	}
+	return ks
 }
 
 func (s *Scheduler) UpdateConfig(cfg Config) {
@@ -101,10 +111,22 @@ func (s *Scheduler) Config() Config {
 func (s *Scheduler) Status() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Status{
-		LLMQueue:     s.queueInfo(s.llmQueue, s.rtm.LLM().LoadedModel(), s.llmBatch),
-		WhisperQueue: s.queueInfo(s.whisperQueue, s.rtm.Whisper().LoadedModel(), s.whisperBatch),
+
+	queues := make(map[string]QueueInfo)
+	for _, kind := range s.rtm.Kinds() {
+		ks := s.getKind(kind)
+		rt := s.rtm.Get(kind)
+		model := ""
+		if rt != nil {
+			model = rt.LoadedModel()
+		}
+		queues[kind] = s.queueInfo(ks.queue, model, ks.batch)
 	}
+
+	st := Status{Queues: queues}
+	st.LLMQueue = queues["llm"]
+	st.WhisperQueue = queues["whisper"]
+	return st
 }
 
 func (s *Scheduler) queueInfo(q []*Request, currentModel string, batch int) QueueInfo {
@@ -120,12 +142,11 @@ func (s *Scheduler) queueInfo(q []*Request, currentModel string, batch int) Queu
 	}
 }
 
-// Enqueue adds a request to the appropriate queue and blocks until the model is
-// ready to serve it (or context is cancelled / max wait exceeded).
 func (s *Scheduler) Enqueue(req *Request) error {
 	s.mu.Lock()
 
-	if len(s.queue(req.Kind)) >= s.config.MaxQueueSize {
+	ks := s.getKind(req.Kind)
+	if len(ks.queue) >= s.config.MaxQueueSize {
 		s.mu.Unlock()
 		return fmt.Errorf("queue full (%d)", s.config.MaxQueueSize)
 	}
@@ -133,7 +154,7 @@ func (s *Scheduler) Enqueue(req *Request) error {
 	req.enqueuedAt = time.Now()
 	req.Ready = make(chan struct{})
 
-	s.appendQueue(req)
+	ks.queue = append(ks.queue, req)
 	s.mu.Unlock()
 
 	s.tryDispatch(req.Kind)
@@ -152,13 +173,10 @@ func (s *Scheduler) Enqueue(req *Request) error {
 	}
 }
 
-// Done marks a request as completed, allowing the scheduler to dispatch next.
 func (s *Scheduler) Done(req *Request) {
-	switch req.Kind {
-	case "llm":
-		s.rtm.LLM().ReleaseSlot()
-	case "whisper":
-		s.rtm.Whisper().ReleaseSlot()
+	rt := s.rtm.Get(req.Kind)
+	if rt != nil {
+		rt.ReleaseSlot()
 	}
 	s.resetIdleTimer(req.Kind)
 	s.tryDispatch(req.Kind)
@@ -167,22 +185,16 @@ func (s *Scheduler) Done(req *Request) {
 func (s *Scheduler) Close() {
 	close(s.closed)
 	s.mu.Lock()
-	if s.llmIdle != nil {
-		s.llmIdle.Stop()
+	for _, ks := range s.kinds {
+		if ks.idleTimer != nil {
+			ks.idleTimer.Stop()
+		}
+		for _, r := range ks.queue {
+			r.Err = fmt.Errorf("scheduler closed")
+			close(r.Ready)
+		}
+		ks.queue = nil
 	}
-	if s.whisperIdle != nil {
-		s.whisperIdle.Stop()
-	}
-	for _, r := range s.llmQueue {
-		r.Err = fmt.Errorf("scheduler closed")
-		close(r.Ready)
-	}
-	for _, r := range s.whisperQueue {
-		r.Err = fmt.Errorf("scheduler closed")
-		close(r.Ready)
-	}
-	s.llmQueue = nil
-	s.whisperQueue = nil
 	s.mu.Unlock()
 }
 
@@ -190,26 +202,31 @@ func (s *Scheduler) tryDispatch(kind string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	q := s.queue(kind)
-	if len(q) == 0 {
+	ks := s.getKind(kind)
+	if len(ks.queue) == 0 {
 		return
 	}
 
-	next := s.pickNext(q, kind)
+	rt := s.rtm.Get(kind)
+	if rt == nil {
+		return
+	}
+
+	next := s.pickNext(ks.queue, rt.LoadedModel())
 	if next == nil {
 		return
 	}
 
-	currentModel := s.currentModel(kind)
-	maxParallel := s.maxParallel(kind)
-	inFlight := s.inFlightCount(kind)
+	currentModel := rt.LoadedModel()
+	maxParallel := rt.MaxParallel()
+	inFlight := rt.InFlightCount()
 
-	if next.ModelID == currentModel && s.isRuntimeReady(kind) {
+	if next.ModelID == currentModel && rt.IsReady() {
 		if inFlight < int64(maxParallel) {
-			s.acquireSlot(kind)
+			rt.AcquireSlot()
 			s.removeFromQueue(next, kind)
-			s.incrementBatch(kind)
-			s.cancelIdleTimer(kind)
+			ks.batch++
+			s.cancelIdleTimerLocked(kind)
 			close(next.Ready)
 			if inFlight+1 < int64(maxParallel) {
 				go s.tryDispatch(kind)
@@ -224,28 +241,22 @@ func (s *Scheduler) tryDispatch(kind string) {
 			return
 		}
 
-		batch := s.batchCount(kind)
-		if currentModel != "" && batch >= s.config.MaxBatchBeforeSwitch && s.hasOtherModels(q, currentModel) {
-			s.resetBatch(kind)
+		if currentModel != "" && ks.batch >= s.config.MaxBatchBeforeSwitch && s.hasOtherModels(ks.queue, currentModel) {
+			ks.batch = 0
 		}
 
-		s.cancelIdleTimer(kind)
+		s.cancelIdleTimerLocked(kind)
 		go s.switchAndDispatch(kind, next.ModelID)
 	}
 }
 
 func (s *Scheduler) switchAndDispatch(kind, modelID string) {
-	var err error
-	switch kind {
-	case "llm":
-		err = s.rtm.EnsureLLM(modelID, runtime.LLMOpts{})
-	case "whisper":
-		err = s.rtm.EnsureWhisper(modelID, runtime.WhisperOpts{})
-	}
+	err := s.rtm.Ensure(kind, modelID, nil)
 
 	s.mu.Lock()
 	if err != nil {
-		q := s.queue(kind)
+		ks := s.getKind(kind)
+		q := ks.queue
 		for i := 0; i < len(q); {
 			if q[i].ModelID == modelID {
 				q[i].Err = fmt.Errorf("model load failed: %w", err)
@@ -255,11 +266,11 @@ func (s *Scheduler) switchAndDispatch(kind, modelID string) {
 				i++
 			}
 		}
-		s.setQueue(kind, q)
+		ks.queue = q
 		s.mu.Unlock()
 		return
 	}
-	s.resetBatch(kind)
+	s.getKind(kind).batch = 0
 	s.mu.Unlock()
 
 	s.tryDispatch(kind)
@@ -273,78 +284,37 @@ func (s *Scheduler) resetIdleTimer(kind string) {
 		return
 	}
 
-	if s.inFlightCount(kind) > 0 || len(s.queue(kind)) > 0 {
+	rt := s.rtm.Get(kind)
+	if rt == nil {
+		return
+	}
+
+	ks := s.getKind(kind)
+	if rt.InFlightCount() > 0 || len(ks.queue) > 0 {
 		return
 	}
 
 	timer := time.AfterFunc(s.config.IdleTimeout, func() {
-		switch kind {
-		case "llm":
-			s.rtm.LLM().Stop()
-		case "whisper":
-			s.rtm.Whisper().Stop()
+		if r := s.rtm.Get(kind); r != nil {
+			r.Stop()
 		}
 	})
 
-	switch kind {
-	case "llm":
-		if s.llmIdle != nil {
-			s.llmIdle.Stop()
-		}
-		s.llmIdle = timer
-	case "whisper":
-		if s.whisperIdle != nil {
-			s.whisperIdle.Stop()
-		}
-		s.whisperIdle = timer
+	if ks.idleTimer != nil {
+		ks.idleTimer.Stop()
 	}
+	ks.idleTimer = timer
 }
 
-func (s *Scheduler) cancelIdleTimer(kind string) {
-	switch kind {
-	case "llm":
-		if s.llmIdle != nil {
-			s.llmIdle.Stop()
-			s.llmIdle = nil
-		}
-	case "whisper":
-		if s.whisperIdle != nil {
-			s.whisperIdle.Stop()
-			s.whisperIdle = nil
-		}
+func (s *Scheduler) cancelIdleTimerLocked(kind string) {
+	ks := s.getKind(kind)
+	if ks.idleTimer != nil {
+		ks.idleTimer.Stop()
+		ks.idleTimer = nil
 	}
 }
 
 // --- helpers ---
-
-func (s *Scheduler) queue(kind string) []*Request {
-	switch kind {
-	case "llm":
-		return s.llmQueue
-	case "whisper":
-		return s.whisperQueue
-	default:
-		return nil
-	}
-}
-
-func (s *Scheduler) setQueue(kind string, q []*Request) {
-	switch kind {
-	case "llm":
-		s.llmQueue = q
-	case "whisper":
-		s.whisperQueue = q
-	}
-}
-
-func (s *Scheduler) appendQueue(req *Request) {
-	switch req.Kind {
-	case "llm":
-		s.llmQueue = append(s.llmQueue, req)
-	case "whisper":
-		s.whisperQueue = append(s.whisperQueue, req)
-	}
-}
 
 func (s *Scheduler) removeRequest(req *Request) {
 	s.mu.Lock()
@@ -353,122 +323,32 @@ func (s *Scheduler) removeRequest(req *Request) {
 }
 
 func (s *Scheduler) removeFromQueue(req *Request, kind string) {
-	q := s.queue(kind)
-	for i, r := range q {
+	ks := s.getKind(kind)
+	for i, r := range ks.queue {
 		if r == req {
-			s.setQueue(kind, append(q[:i], q[i+1:]...))
+			ks.queue = append(ks.queue[:i], ks.queue[i+1:]...)
 			return
 		}
 	}
 }
 
-func (s *Scheduler) pickNext(q []*Request, kind string) *Request {
-	currentModel := s.currentModel(kind)
-
-	// First: high priority requests for current model
+func (s *Scheduler) pickNext(q []*Request, currentModel string) *Request {
 	for _, r := range q {
 		if r.Priority == PriorityHigh && r.ModelID == currentModel {
 			return r
 		}
 	}
-	// Then: normal requests for current model
 	for _, r := range q {
 		if r.ModelID == currentModel {
 			return r
 		}
 	}
-	// Then: high priority for any model
 	for _, r := range q {
 		if r.Priority == PriorityHigh {
 			return r
 		}
 	}
-	// Then: FIFO
 	return q[0]
-}
-
-func (s *Scheduler) currentModel(kind string) string {
-	switch kind {
-	case "llm":
-		return s.rtm.LLM().LoadedModel()
-	case "whisper":
-		return s.rtm.Whisper().LoadedModel()
-	default:
-		return ""
-	}
-}
-
-func (s *Scheduler) isRuntimeReady(kind string) bool {
-	switch kind {
-	case "llm":
-		return s.rtm.LLM().IsReady()
-	case "whisper":
-		return s.rtm.Whisper().IsReady()
-	default:
-		return false
-	}
-}
-
-func (s *Scheduler) inFlightCount(kind string) int64 {
-	switch kind {
-	case "llm":
-		return s.rtm.LLM().InFlightCount()
-	case "whisper":
-		return s.rtm.Whisper().InFlightCount()
-	default:
-		return 0
-	}
-}
-
-func (s *Scheduler) acquireSlot(kind string) {
-	switch kind {
-	case "llm":
-		s.rtm.LLM().AcquireSlot()
-	case "whisper":
-		s.rtm.Whisper().AcquireSlot()
-	}
-}
-
-func (s *Scheduler) maxParallel(kind string) int {
-	switch kind {
-	case "llm":
-		st := s.rtm.LLM().Status()
-		if st.Parallel > 0 {
-			return st.Parallel
-		}
-		return 1
-	default:
-		return 1
-	}
-}
-
-func (s *Scheduler) batchCount(kind string) int {
-	switch kind {
-	case "llm":
-		return s.llmBatch
-	case "whisper":
-		return s.whisperBatch
-	default:
-		return 0
-	}
-}
-
-func (s *Scheduler) incrementBatch(kind string) {
-	switch kind {
-	case "llm":
-		s.llmBatch++
-	case "whisper":
-		s.whisperBatch++
-	}
-}
-
-func (s *Scheduler) resetBatch(kind string) {
-	switch kind {
-	case "llm":
-		s.llmBatch = 0
-	case "whisper":
-		s.whisperBatch = 0
-	}
 }
 
 func (s *Scheduler) hasOtherModels(q []*Request, currentModel string) bool {
@@ -480,25 +360,20 @@ func (s *Scheduler) hasOtherModels(q []*Request, currentModel string) bool {
 	return false
 }
 
-// ProxyTarget returns the upstream URL for a request kind, or empty string if not ready.
 func (s *Scheduler) ProxyTarget(kind string) string {
-	switch kind {
-	case "llm":
-		return s.rtm.LLM().ProxyURL()
-	case "whisper":
-		return s.rtm.Whisper().ProxyURL()
-	default:
+	rt := s.rtm.Get(kind)
+	if rt == nil {
 		return ""
 	}
+	return rt.ProxyURL()
 }
 
-// CancelQueuedRequest cancels a queued request by ID.
 func (s *Scheduler) CancelQueuedRequest(requestID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, q := range [][]*Request{s.llmQueue, s.whisperQueue} {
-		for _, r := range q {
+	for _, ks := range s.kinds {
+		for _, r := range ks.queue {
 			if r.ID == requestID && r.Cancel != nil {
 				r.Cancel()
 				return true
@@ -508,8 +383,6 @@ func (s *Scheduler) CancelQueuedRequest(requestID string) bool {
 	return false
 }
 
-// HTTPHandler wraps request through the queue. The caller provides a handler
-// that will be invoked once the model is loaded and ready.
 func (s *Scheduler) HTTPHandler(kind, modelID, clientID string, priority Priority, w http.ResponseWriter, r *http.Request, serve func()) error {
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()

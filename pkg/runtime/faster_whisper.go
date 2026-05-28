@@ -2,6 +2,8 @@ package runtime
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -11,43 +13,42 @@ import (
 	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
-type WhisperOpts struct {
-	Threads int
+type FasterWhisperOpts struct {
+	Threads     int
+	Device      string
+	ComputeType string
 }
 
-type WhisperRuntime struct {
+type FasterWhisperRuntime struct {
 	mu          sync.Mutex
 	proc        *ProcessHandle
-	binMgr      *BinaryManager
+	binDir      string
 	loadedModel string
 	port        int
 	startedAt   time.Time
-	opts        WhisperOpts
+	opts        FasterWhisperOpts
 	inFlight    atomic.Int64
 
 	crashCount  int
 	lastCrashAt time.Time
 }
 
-func NewWhisperRuntime(binMgr *BinaryManager) *WhisperRuntime {
-	r := &WhisperRuntime{
-		binMgr: binMgr,
-	}
+func NewFasterWhisperRuntime(binDir string) *FasterWhisperRuntime {
+	r := &FasterWhisperRuntime{binDir: binDir}
 	r.proc = NewProcess(r.onCrash)
 	return r
 }
 
-func (r *WhisperRuntime) Kind() string { return "whisper" }
+func (r *FasterWhisperRuntime) Kind() string { return "faster-whisper" }
 
-func (r *WhisperRuntime) Ensure(modelID string, opts any) error {
-	var whisperOpts WhisperOpts
+func (r *FasterWhisperRuntime) Ensure(modelID string, opts any) error {
+	var fwOpts FasterWhisperOpts
 	switch v := opts.(type) {
-	case WhisperOpts:
-		whisperOpts = v
+	case FasterWhisperOpts:
+		fwOpts = v
 	case nil:
-		// use zero-value defaults
 	default:
-		return fmt.Errorf("whisper runtime: unsupported opts type %T", opts)
+		return fmt.Errorf("faster-whisper runtime: unsupported opts type %T", opts)
 	}
 
 	current := r.LoadedModel()
@@ -55,14 +56,14 @@ func (r *WhisperRuntime) Ensure(modelID string, opts any) error {
 		return nil
 	}
 	if current != "" && current != modelID {
-		return r.ModelSwitch(modelID, whisperOpts)
+		return r.ModelSwitch(modelID, fwOpts)
 	}
-	return r.Start(modelID, whisperOpts)
+	return r.Start(modelID, fwOpts)
 }
 
-func (r *WhisperRuntime) MaxParallel() int { return 1 }
+func (r *FasterWhisperRuntime) MaxParallel() int { return 1 }
 
-type WhisperStatus struct {
+type FasterWhisperStatus struct {
 	State     ProcessState `json:"state"`
 	ModelID   string       `json:"modelId,omitempty"`
 	Port      int          `json:"port,omitempty"`
@@ -71,10 +72,10 @@ type WhisperStatus struct {
 	Error     string       `json:"error,omitempty"`
 }
 
-func (r *WhisperRuntime) StatusTyped() WhisperStatus {
+func (r *FasterWhisperRuntime) StatusTyped() FasterWhisperStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := WhisperStatus{
+	s := FasterWhisperStatus{
 		State:    r.proc.State(),
 		ModelID:  r.loadedModel,
 		Port:     r.port,
@@ -90,21 +91,15 @@ func (r *WhisperRuntime) StatusTyped() WhisperStatus {
 	return s
 }
 
-func (r *WhisperRuntime) Status() any { return r.StatusTyped() }
+func (r *FasterWhisperRuntime) Status() any { return r.StatusTyped() }
 
-func (r *WhisperRuntime) LoadedModel() string {
+func (r *FasterWhisperRuntime) LoadedModel() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.loadedModel
 }
 
-func (r *WhisperRuntime) Port() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.port
-}
-
-func (r *WhisperRuntime) ProxyURL() string {
+func (r *FasterWhisperRuntime) ProxyURL() string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.port == 0 {
@@ -113,27 +108,16 @@ func (r *WhisperRuntime) ProxyURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d", r.port)
 }
 
-func (r *WhisperRuntime) IsReady() bool {
+func (r *FasterWhisperRuntime) IsReady() bool {
 	return r.proc.State() == StateReady
 }
 
-func (r *WhisperRuntime) AcquireSlot() {
-	r.inFlight.Add(1)
-}
+func (r *FasterWhisperRuntime) AcquireSlot()         { r.inFlight.Add(1) }
+func (r *FasterWhisperRuntime) ReleaseSlot()         { r.inFlight.Add(-1) }
+func (r *FasterWhisperRuntime) InFlightCount() int64 { return r.inFlight.Load() }
+func (r *FasterWhisperRuntime) Logs() []string       { return r.proc.Logs() }
 
-func (r *WhisperRuntime) ReleaseSlot() {
-	r.inFlight.Add(-1)
-}
-
-func (r *WhisperRuntime) InFlightCount() int64 {
-	return r.inFlight.Load()
-}
-
-func (r *WhisperRuntime) Logs() []string {
-	return r.proc.Logs()
-}
-
-func (r *WhisperRuntime) Start(modelID string, opts WhisperOpts) error {
+func (r *FasterWhisperRuntime) Start(modelID string, opts FasterWhisperOpts) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -147,19 +131,24 @@ func (r *WhisperRuntime) Start(modelID string, opts WhisperOpts) error {
 		r.mu.Lock()
 	}
 
-	binaryPath, err := r.binMgr.Resolve(BinaryWhisperServer)
-	if err != nil {
-		return err
-	}
-
 	m := manifest.Find(modelID)
 	if m == nil {
 		return fmt.Errorf("model %q not found in manifest", modelID)
 	}
 
-	modelPath := resolveWhisperModelPath(m)
+	modelPath := resolveFasterWhisperModelPath(m)
 	if modelPath == "" {
 		return fmt.Errorf("model %q files not ready", modelID)
+	}
+
+	pythonPath, err := findPython()
+	if err != nil {
+		return err
+	}
+
+	scriptPath := filepath.Join(r.binDir, "faster_whisper_server.py")
+	if _, err := os.Stat(scriptPath); err != nil {
+		return fmt.Errorf("faster_whisper_server.py not found at %s", scriptPath)
 	}
 
 	port, err := findFreePort()
@@ -170,11 +159,20 @@ func (r *WhisperRuntime) Start(modelID string, opts WhisperOpts) error {
 	if opts.Threads <= 0 {
 		opts.Threads = 4
 	}
+	if opts.Device == "" {
+		opts.Device = "auto"
+	}
+	if opts.ComputeType == "" {
+		opts.ComputeType = "auto"
+	}
 
 	args := []string{
+		scriptPath,
 		"--host", "127.0.0.1",
 		"--port", strconv.Itoa(port),
 		"--model", modelPath,
+		"--device", opts.Device,
+		"--compute-type", opts.ComputeType,
 		"--threads", strconv.Itoa(opts.Threads),
 	}
 
@@ -184,11 +182,10 @@ func (r *WhisperRuntime) Start(modelID string, opts WhisperOpts) error {
 	r.startedAt = time.Now()
 
 	cfg := ProcessConfig{
-		Binary:         binaryPath,
+		Binary:         pythonPath,
 		Args:           args,
-		Env:            libraryPathEnv(binaryPath),
 		HealthURL:      fmt.Sprintf("http://127.0.0.1:%d/health", port),
-		HealthTimeout:  30 * time.Second,
+		HealthTimeout:  120 * time.Second,
 		HealthInterval: 500 * time.Millisecond,
 		StopTimeout:    5 * time.Second,
 	}
@@ -202,11 +199,10 @@ func (r *WhisperRuntime) Start(modelID string, opts WhisperOpts) error {
 		r.port = 0
 		return err
 	}
-
 	return nil
 }
 
-func (r *WhisperRuntime) Stop() error {
+func (r *FasterWhisperRuntime) Stop() error {
 	r.mu.Lock()
 	r.loadedModel = ""
 	r.port = 0
@@ -214,20 +210,18 @@ func (r *WhisperRuntime) Stop() error {
 	return r.proc.Stop(5 * time.Second)
 }
 
-func (r *WhisperRuntime) ModelSwitch(modelID string, opts WhisperOpts) error {
+func (r *FasterWhisperRuntime) ModelSwitch(modelID string, opts FasterWhisperOpts) error {
 	deadline := time.Now().Add(30 * time.Second)
 	for r.inFlight.Load() > 0 && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
-
 	if err := r.Stop(); err != nil {
 		return fmt.Errorf("stop current model: %w", err)
 	}
-
 	return r.Start(modelID, opts)
 }
 
-func (r *WhisperRuntime) onCrash(err error) {
+func (r *FasterWhisperRuntime) onCrash(err error) {
 	r.mu.Lock()
 	now := time.Now()
 	if now.Sub(r.lastCrashAt) > 60*time.Second {
@@ -257,11 +251,13 @@ func (r *WhisperRuntime) onCrash(err error) {
 	}
 }
 
-func resolveWhisperModelPath(m *manifest.Model) string {
+// resolveFasterWhisperModelPath returns the model directory path for faster-whisper.
+func resolveFasterWhisperModelPath(m *manifest.Model) string {
+	modelDir := storage.ModelDir(m.ID)
 	for _, f := range m.Files {
-		if storage.IsFileReady(m.ID, f.Filename, f.Bytes) {
-			return storage.ModelFilePath(m.ID, f.Filename)
+		if !storage.IsFileReady(m.ID, f.Filename, f.Bytes) {
+			return ""
 		}
 	}
-	return ""
+	return modelDir
 }

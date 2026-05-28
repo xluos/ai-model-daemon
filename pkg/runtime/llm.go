@@ -53,7 +53,39 @@ type LLMStatus struct {
 	Error       string       `json:"error,omitempty"`
 }
 
-func (r *LLMRuntime) Status() LLMStatus {
+func (r *LLMRuntime) Kind() string { return "llm" }
+
+func (r *LLMRuntime) Ensure(modelID string, opts any) error {
+	var llmOpts LLMOpts
+	switch v := opts.(type) {
+	case LLMOpts:
+		llmOpts = v
+	case nil:
+		// use zero-value defaults
+	default:
+		return fmt.Errorf("llm runtime: unsupported opts type %T", opts)
+	}
+
+	current := r.LoadedModel()
+	if current == modelID && r.IsReady() {
+		return nil
+	}
+	if current != "" && current != modelID {
+		return r.ModelSwitch(modelID, llmOpts)
+	}
+	return r.Start(modelID, llmOpts)
+}
+
+func (r *LLMRuntime) MaxParallel() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.opts.Parallel > 0 {
+		return r.opts.Parallel
+	}
+	return 1
+}
+
+func (r *LLMRuntime) StatusTyped() LLMStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := LLMStatus{
@@ -73,6 +105,8 @@ func (r *LLMRuntime) Status() LLMStatus {
 	}
 	return s
 }
+
+func (r *LLMRuntime) Status() any { return r.StatusTyped() }
 
 func (r *LLMRuntime) LoadedModel() string {
 	r.mu.Lock()

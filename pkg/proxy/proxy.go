@@ -66,7 +66,7 @@ func (p *Proxy) HandleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	kind, err := runtime.RuntimeKindFor(m.RuntimeKind)
+	kind, err := p.rtm.ValidateKind(m.RuntimeKind)
 	if err != nil || kind != "llm" {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("model %q is not an LLM model", modelID))
 		return
@@ -99,11 +99,11 @@ func (p *Proxy) HandleCompletions(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) HandleModels(w http.ResponseWriter, r *http.Request) {
 	var models []map[string]interface{}
 	for _, m := range manifest.Registry {
-		kind, _ := runtime.RuntimeKindFor(m.RuntimeKind)
-		if kind != "llm" && kind != "whisper" {
+		kind, err := p.rtm.ValidateKind(m.RuntimeKind)
+		if err != nil {
 			continue
 		}
-		hasRunnable := len(m.Quantizations) > 0 || m.RuntimeKind == "whisper"
+		hasRunnable := len(m.Quantizations) > 0 || m.RuntimeKind == "whisper" || m.RuntimeKind == "faster-whisper" || m.RuntimeKind == "ocr"
 		if !hasRunnable {
 			continue
 		}
@@ -296,6 +296,109 @@ func forwardMultipart(w http.ResponseWriter, r *http.Request, targetBase string,
 			if contentType != "" {
 				req.Header.Set("Content-Type", contentType)
 			}
+		},
+		FlushInterval: -1,
+	}
+
+	proxy.ServeHTTP(w, r)
+}
+
+// HandleOCR handles POST /v1/ocr
+func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
+	modelID := r.URL.Query().Get("model")
+	if modelID == "" {
+		modelID = "ppocr-v4-mobile"
+	}
+	modelID = resolveModelID(modelID)
+	m := manifest.Find(modelID)
+	if m == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", modelID))
+		return
+	}
+	if !isModelReady(m) {
+		writeError(w, http.StatusPreconditionFailed, fmt.Sprintf("model %q is not downloaded", modelID))
+		return
+	}
+
+	clientID := r.Header.Get("X-Client-ID")
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	if err := p.scheduler.HTTPHandler("ocr", modelID, clientID, queue.PriorityNormal, w, r, func() {
+		target := p.scheduler.ProxyTarget("ocr")
+		if target == "" {
+			writeError(w, http.StatusServiceUnavailable, "OCR runtime not ready")
+			return
+		}
+		proxyOCR(w, r, target, body)
+	}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	}
+}
+
+// HandleFasterWhisperTranscriptions handles POST /v1/audio/transcriptions with faster-whisper backend.
+func (p *Proxy) HandleFasterWhisperTranscriptions(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid multipart form")
+		return
+	}
+
+	modelName := r.FormValue("model")
+	if modelName == "" {
+		modelName = "faster-whisper-large-v3"
+	}
+
+	modelID := resolveModelID(modelName)
+	m := manifest.Find(modelID)
+	if m == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("model %q not found", modelName))
+		return
+	}
+	if !isModelReady(m) {
+		writeError(w, http.StatusPreconditionFailed, fmt.Sprintf("model %q is not downloaded", modelID))
+		return
+	}
+
+	clientID := r.Header.Get("X-Client-ID")
+
+	if err := p.scheduler.HTTPHandler("faster-whisper", modelID, clientID, queue.PriorityNormal, w, r, func() {
+		target := p.scheduler.ProxyTarget("faster-whisper")
+		if target == "" {
+			writeError(w, http.StatusServiceUnavailable, "faster-whisper runtime not ready")
+			return
+		}
+		forwardMultipart(w, r, target, body, r.Header.Get("Content-Type"))
+	}); err != nil {
+		writeError(w, http.StatusServiceUnavailable, err.Error())
+	}
+}
+
+func proxyOCR(w http.ResponseWriter, r *http.Request, targetBase string, body []byte) {
+	targetURL, err := url.Parse(targetBase)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "invalid proxy target")
+		return
+	}
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = targetURL.Scheme
+			req.URL.Host = targetURL.Host
+			req.URL.Path = "/ocr"
+			req.Host = targetURL.Host
+			req.Body = io.NopCloser(bytes.NewReader(body))
+			req.ContentLength = int64(len(body))
 		},
 		FlushInterval: -1,
 	}

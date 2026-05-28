@@ -283,6 +283,91 @@ var Registry = []Model{
 		Quantizations:       []Quantization{{Key: "ud_q4_k_xl", Label: "UD-Q4_K_XL", Repo: "unsloth/Qwen3.6-35B-A3B-GGUF", LLMFile: "Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf", MmprojFile: "mmproj-F16.gguf", SizeBytes: 21 * 1024 * 1024 * 1024}},
 	},
 
+	// --- PaddleOCR models ---
+	{
+		ID:          "ppocr-v4-mobile",
+		Name:        "PP-OCRv4 Mobile",
+		Desc:        "Chinese OCR pipeline (det+rec+cls), fast and lightweight",
+		RuntimeKind: "ocr",
+		Files: []ModelFile{
+			{Role: "det", Filename: "ch_PP-OCRv4_det_infer.tar", Bytes: 5_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar"}},
+			{Role: "rec", Filename: "ch_PP-OCRv4_rec_infer.tar", Bytes: 11_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar"}},
+			{Role: "cls", Filename: "ch_ppocr_mobile_v2.0_cls_infer.tar", Bytes: 2_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar"}},
+		},
+		Apps:    []string{"clipiq"},
+		Enables: []string{"ocr"},
+	},
+	{
+		ID:          "ppocr-v4-server",
+		Name:        "PP-OCRv4 Server",
+		Desc:        "Chinese OCR pipeline (det+rec), highest accuracy",
+		RuntimeKind: "ocr",
+		Files: []ModelFile{
+			{Role: "det", Filename: "ch_PP-OCRv4_det_server_infer.tar", Bytes: 115_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_server_infer.tar"}},
+			{Role: "rec", Filename: "ch_PP-OCRv4_rec_server_infer.tar", Bytes: 90_000_000, URLs: []string{"https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_server_infer.tar"}},
+		},
+		Apps:    []string{"clipiq"},
+		Enables: []string{"ocr"},
+	},
+
+	// --- faster-whisper ASR models ---
+	{
+		ID:          "faster-whisper-tiny",
+		Name:        "Faster Whisper Tiny",
+		Desc:        "Fastest, lowest accuracy (CTranslate2, ~75 MB)",
+		RuntimeKind: "faster-whisper",
+		Files: []ModelFile{
+			{Role: "model", Filename: "model.bin", Bytes: 75_000_000, URLs: hfURLs("Systran/faster-whisper-tiny", "model.bin")},
+			{Role: "config", Filename: "config.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-tiny", "config.json")},
+			{Role: "tokenizer", Filename: "tokenizer.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-tiny", "tokenizer.json")},
+			{Role: "vocabulary", Filename: "vocabulary.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-tiny", "vocabulary.json")},
+		},
+		Apps:    []string{"clipiq"},
+		Enables: []string{"transcription"},
+	},
+	{
+		ID:          "faster-whisper-base",
+		Name:        "Faster Whisper Base",
+		Desc:        "Fast with decent accuracy (CTranslate2, ~142 MB)",
+		RuntimeKind: "faster-whisper",
+		Files: []ModelFile{
+			{Role: "model", Filename: "model.bin", Bytes: 142_000_000, URLs: hfURLs("Systran/faster-whisper-base", "model.bin")},
+			{Role: "config", Filename: "config.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-base", "config.json")},
+			{Role: "tokenizer", Filename: "tokenizer.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-base", "tokenizer.json")},
+			{Role: "vocabulary", Filename: "vocabulary.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-base", "vocabulary.json")},
+		},
+		Apps:    []string{"clipiq"},
+		Enables: []string{"transcription"},
+	},
+	{
+		ID:          "faster-whisper-small",
+		Name:        "Faster Whisper Small",
+		Desc:        "Balanced speed and accuracy (CTranslate2, ~466 MB)",
+		RuntimeKind: "faster-whisper",
+		Files: []ModelFile{
+			{Role: "model", Filename: "model.bin", Bytes: 466_000_000, URLs: hfURLs("Systran/faster-whisper-small", "model.bin")},
+			{Role: "config", Filename: "config.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-small", "config.json")},
+			{Role: "tokenizer", Filename: "tokenizer.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-small", "tokenizer.json")},
+			{Role: "vocabulary", Filename: "vocabulary.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-small", "vocabulary.json")},
+		},
+		Apps:    []string{"clipiq"},
+		Enables: []string{"transcription"},
+	},
+	{
+		ID:          "faster-whisper-large-v3",
+		Name:        "Faster Whisper Large V3",
+		Desc:        "Best accuracy (CTranslate2, ~3 GB)",
+		RuntimeKind: "faster-whisper",
+		Files: []ModelFile{
+			{Role: "model", Filename: "model.bin", Bytes: 3_100_000_000, URLs: hfURLs("Systran/faster-whisper-large-v3", "model.bin")},
+			{Role: "config", Filename: "config.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-large-v3", "config.json")},
+			{Role: "tokenizer", Filename: "tokenizer.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-large-v3", "tokenizer.json")},
+			{Role: "vocabulary", Filename: "vocabulary.json", Bytes: 0, URLs: hfURLs("Systran/faster-whisper-large-v3", "vocabulary.json")},
+		},
+		Apps:    []string{"clipiq"},
+		Enables: []string{"transcription"},
+	},
+
 	// --- Whisper ASR models ---
 	{
 		ID:          "whisper-tiny",

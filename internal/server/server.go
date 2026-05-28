@@ -74,6 +74,8 @@ func New(token string, onShutdown func()) *Server {
 	s.mux.HandleFunc("POST /v1/chat/completions", p.HandleChatCompletions)
 	s.mux.HandleFunc("POST /v1/completions", p.HandleCompletions)
 	s.mux.HandleFunc("POST /v1/audio/transcriptions", p.HandleAudioTranscriptions)
+	s.mux.HandleFunc("POST /v1/audio/transcriptions/faster", p.HandleFasterWhisperTranscriptions)
+	s.mux.HandleFunc("POST /v1/ocr", p.HandleOCR)
 
 	// Runtime management routes
 	s.mux.HandleFunc("GET /api/runtime/status", s.handleRuntimeStatus)
@@ -83,6 +85,11 @@ func New(token string, onShutdown func()) *Server {
 	s.mux.HandleFunc("POST /api/runtime/whisper/stop", s.handleRuntimeWhisperStop)
 	s.mux.HandleFunc("GET /api/runtime/llm/logs", s.handleRuntimeLLMLogs)
 	s.mux.HandleFunc("GET /api/runtime/whisper/logs", s.handleRuntimeWhisperLogs)
+
+	// Generic runtime routes (work for any registered runtime kind)
+	s.mux.HandleFunc("POST /api/runtime/{kind}/start", s.handleGenericRuntimeStart)
+	s.mux.HandleFunc("POST /api/runtime/{kind}/stop", s.handleGenericRuntimeStop)
+	s.mux.HandleFunc("GET /api/runtime/{kind}/logs", s.handleGenericRuntimeLogs)
 
 	// Queue management routes
 	s.mux.HandleFunc("GET /api/queue/status", s.handleQueueStatus)
@@ -373,6 +380,17 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 			return
 		}
+
+		// Extract tar archives (e.g. PaddleOCR model packages)
+		if _, extractErr := download.ExtractTarIfNeeded(destPath); extractErr != nil {
+			data, _ := json.Marshal(map[string]interface{}{
+				"modelId": id, "fileRole": fileRole, "ok": false,
+				"error": extractErr.Error(),
+			})
+			fmt.Fprintf(w, "event: done\ndata: %s\n\n", data)
+			flusher.Flush()
+			return
+		}
 	}
 
 	data, _ := json.Marshal(map[string]interface{}{"modelId": id, "ok": true})
@@ -632,7 +650,7 @@ func (s *Server) handleRuntimeLLMStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.rtm.LLM().Status())
+	writeJSON(w, http.StatusOK, s.rtm.LLM().StatusTyped())
 }
 
 func (s *Server) handleRuntimeLLMStop(w http.ResponseWriter, r *http.Request) {
@@ -662,7 +680,7 @@ func (s *Server) handleRuntimeWhisperStart(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.rtm.Whisper().Status())
+	writeJSON(w, http.StatusOK, s.rtm.Whisper().StatusTyped())
 }
 
 func (s *Server) handleRuntimeWhisperStop(w http.ResponseWriter, r *http.Request) {
@@ -846,4 +864,57 @@ func (s *Server) handleClientList(w http.ResponseWriter, r *http.Request) {
 		"clients": s.tracker.List(),
 		"count":   s.tracker.Count(),
 	})
+}
+
+// --- Generic runtime handlers ---
+
+func (s *Server) handleGenericRuntimeStart(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	rt := s.rtm.Get(kind)
+	if rt == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown runtime kind: " + kind})
+		return
+	}
+
+	var body struct {
+		ModelID string `json:"modelId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if body.ModelID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "modelId is required"})
+		return
+	}
+
+	if err := rt.Ensure(body.ModelID, nil); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, rt.Status())
+}
+
+func (s *Server) handleGenericRuntimeStop(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	rt := s.rtm.Get(kind)
+	if rt == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown runtime kind: " + kind})
+		return
+	}
+	if err := rt.Stop(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) handleGenericRuntimeLogs(w http.ResponseWriter, r *http.Request) {
+	kind := r.PathValue("kind")
+	rt := s.rtm.Get(kind)
+	if rt == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown runtime kind: " + kind})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"logs": rt.Logs()})
 }
