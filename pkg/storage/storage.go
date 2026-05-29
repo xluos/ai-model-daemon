@@ -48,6 +48,12 @@ func HTTPAddrPath() string {
 	return filepath.Join(Dir(), ".daemon.http")
 }
 
+// EndpointPath returns the file path storing the daemon's IPC dial spec
+// (例如 "unix:<abs sock>" 或 "tcp:127.0.0.1:<port>"），供复用探测与集成方消费。
+func EndpointPath() string {
+	return filepath.Join(Dir(), ".daemon.endpoint")
+}
+
 // ModelDir returns the directory for a specific model.
 func ModelDir(modelID string) string {
 	return filepath.Join(Dir(), modelID)

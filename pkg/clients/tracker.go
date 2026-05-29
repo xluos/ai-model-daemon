@@ -1,10 +1,10 @@
 package clients
 
 import (
-	"os"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/xluos/ai-model-daemon/pkg/procutil"
 )
 
 type ClientInfo struct {
@@ -155,9 +155,5 @@ func (t *Tracker) maybeStartGrace() {
 }
 
 func isProcessAlive(pid int) bool {
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return proc.Signal(syscall.Signal(0)) == nil
+	return procutil.IsAlive(pid)
 }

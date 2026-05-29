@@ -296,9 +296,12 @@ func findPython() (string, error) {
 func findInPath(name string) (string, error) {
 	path := os.Getenv("PATH")
 	for _, dir := range strings.Split(path, string(os.PathListSeparator)) {
-		p := filepath.Join(dir, name)
-		if info, err := os.Stat(p); err == nil && !info.IsDir() {
-			return p, nil
+		// Windows 下需带可执行后缀（python.exe 等），故逐一尝试候选名。
+		for _, cand := range execCandidates(name) {
+			p := filepath.Join(dir, cand)
+			if info, err := os.Stat(p); err == nil && !info.IsDir() {
+				return p, nil
+			}
 		}
 	}
 	return "", fmt.Errorf("%s not found in PATH", name)

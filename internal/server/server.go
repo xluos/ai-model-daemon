@@ -39,6 +39,8 @@ type Server struct {
 	proxy      *proxy.Proxy
 	tracker    *clients.Tracker
 	onShutdown func()
+
+	endpoint string // IPC dial spec, e.g. "unix:/x" or "tcp:127.0.0.1:p"
 }
 
 func New(token string, version string, onShutdown func()) *Server {
@@ -116,13 +118,39 @@ func New(token string, version string, onShutdown func()) *Server {
 	return s
 }
 
-func (s *Server) ListenAndServe(socketPath string) error {
-	ln, err := listenIPC(socketPath)
+// Listen 绑定 IPC 监听器并把拨号信息（dialSpec）写入 endpoint 文件，返回 dialSpec。
+// 与 Serve 分离是为了让调用方在真正开始服务前就拿到 dialSpec（尤其 Windows 动态端口），
+// 以便先打印 ready JSON / 写文件，再进入阻塞的 Serve。
+func (s *Server) Listen(socketPath string) (string, error) {
+	ln, dialSpec, err := listenIPC(socketPath)
 	if err != nil {
-		return fmt.Errorf("listen: %w", err)
+		return "", fmt.Errorf("listen: %w", err)
 	}
 	s.listener = ln
-	return http.Serve(ln, s.withAuth(s.mux))
+	s.endpoint = dialSpec
+	_ = os.WriteFile(storage.EndpointPath(), []byte(dialSpec), 0644)
+	return dialSpec, nil
+}
+
+// Serve 在已绑定的监听器上提供 HTTP 服务，阻塞直到出错或监听器关闭。
+func (s *Server) Serve() error {
+	if s.listener == nil {
+		return fmt.Errorf("serve: listener not initialized, call Listen first")
+	}
+	return http.Serve(s.listener, s.withAuth(s.mux))
+}
+
+// Endpoint 返回当前 IPC 拨号信息（dialSpec），Listen 之后有效。
+func (s *Server) Endpoint() string {
+	return s.endpoint
+}
+
+// ListenAndServe 是 Listen + Serve 的便捷组合（保留兼容）。
+func (s *Server) ListenAndServe(socketPath string) error {
+	if _, err := s.Listen(socketPath); err != nil {
+		return err
+	}
+	return s.Serve()
 }
 
 func (s *Server) ListenAndServeTCP(addr string) error {
@@ -189,6 +217,7 @@ func (s *Server) Close() error {
 	if s.tcpListener != nil {
 		s.tcpListener.Close()
 	}
+	os.Remove(storage.EndpointPath())
 	if s.listener != nil {
 		return s.listener.Close()
 	}

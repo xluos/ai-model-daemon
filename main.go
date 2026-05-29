@@ -15,11 +15,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/xluos/ai-model-daemon/internal/server"
 	"github.com/xluos/ai-model-daemon/pkg/download"
 	"github.com/xluos/ai-model-daemon/pkg/fit"
 	"github.com/xluos/ai-model-daemon/pkg/hardware"
 	"github.com/xluos/ai-model-daemon/pkg/manifest"
-	"github.com/xluos/ai-model-daemon/internal/server"
+	"github.com/xluos/ai-model-daemon/pkg/procutil"
 	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
@@ -111,7 +112,7 @@ func parseServeFlags() serveFlags {
 	return f
 }
 
-func isExistingDaemonAlive(pidPath, socketPath string) (int, string, bool) {
+func isExistingDaemonAlive(pidPath string) (int, string, bool) {
 	data, err := os.ReadFile(pidPath)
 	if err != nil {
 		return 0, "", false
@@ -120,11 +121,7 @@ func isExistingDaemonAlive(pidPath, socketPath string) (int, string, bool) {
 	if err != nil || pid <= 0 {
 		return 0, "", false
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return 0, "", false
-	}
-	if err := proc.Signal(syscall.Signal(0)); err != nil {
+	if !procutil.IsAlive(pid) {
 		return 0, "", false
 	}
 	tokenData, _ := os.ReadFile(storage.TokenPath())
@@ -133,15 +130,19 @@ func isExistingDaemonAlive(pidPath, socketPath string) (int, string, bool) {
 		return 0, "", false
 	}
 	// PID 存活不代表是我们的 daemon（PID 可能被复用）
-	// 必须验证 socket 能连通并且 /status 返回正常
-	if !probeDaemonSocket(socketPath, token) {
+	// 必须验证 IPC 端点能连通并且 /status 返回正常
+	network, address, ok := readEndpoint()
+	if !ok {
+		return 0, "", false
+	}
+	if !probeDaemonSocket(network, address, token) {
 		return 0, "", false
 	}
 	return pid, token, true
 }
 
-func probeDaemonSocket(socketPath, token string) bool {
-	resp, err := daemonGet(socketPath, token, "/status")
+func probeDaemonSocket(network, address, token string) bool {
+	resp, err := daemonGet(network, address, token, "/status")
 	if err != nil {
 		return false
 	}
@@ -149,8 +150,8 @@ func probeDaemonSocket(socketPath, token string) bool {
 	return resp.StatusCode == 200
 }
 
-func probeDaemonVersion(socketPath, token string) string {
-	resp, err := daemonGet(socketPath, token, "/version")
+func probeDaemonVersion(network, address, token string) string {
+	resp, err := daemonGet(network, address, token, "/version")
 	if err != nil {
 		return ""
 	}
@@ -162,11 +163,11 @@ func probeDaemonVersion(socketPath, token string) string {
 	return v.Version
 }
 
-func daemonGet(socketPath, token, path string) (*http.Response, error) {
+func daemonGet(network, address, token, path string) (*http.Response, error) {
 	client := http.Client{
 		Transport: &http.Transport{
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.DialTimeout("unix", socketPath, 2*time.Second)
+				return net.DialTimeout(network, address, 2*time.Second)
 			},
 		},
 		Timeout: 3 * time.Second,
@@ -177,6 +178,34 @@ func daemonGet(socketPath, token, path string) (*http.Response, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	return client.Do(req)
+}
+
+// parseEndpoint 将 dialSpec（"unix:/x" 或 "tcp:127.0.0.1:p"）拆成 (network, address)。
+// 按首个 ':' 切分；无法解析时返回空串。
+func parseEndpoint(spec string) (network, address string) {
+	spec = strings.TrimSpace(spec)
+	idx := strings.Index(spec, ":")
+	if idx <= 0 {
+		return "", ""
+	}
+	return spec[:idx], spec[idx+1:]
+}
+
+// readEndpoint 读取已存在 daemon 写的 endpoint 文件并解析。
+// 文件缺失/为空时回退到 unix:SocketPath（兼容 mac 老实例）。
+func readEndpoint() (network, address string, ok bool) {
+	data, err := os.ReadFile(storage.EndpointPath())
+	if err == nil {
+		if n, a := parseEndpoint(string(data)); n != "" && a != "" {
+			return n, a, true
+		}
+	}
+	// fallback：老版本 daemon 未写 endpoint 文件，按 unix socket 兼容。
+	sock := storage.SocketPath()
+	if sock != "" {
+		return "unix", sock, true
+	}
+	return "", "", false
 }
 
 func cmdServe() {
@@ -191,10 +220,11 @@ func cmdServe() {
 	pidPath := storage.PIDPath()
 	tokenPath := storage.TokenPath()
 
-	if existPID, existToken, alive := isExistingDaemonAlive(pidPath, socketPath); alive {
+	if existPID, existToken, alive := isExistingDaemonAlive(pidPath); alive {
+		network, address, _ := readEndpoint()
 		canReuse := !flags.noReuse
 		if canReuse {
-			remoteVer := probeDaemonVersion(socketPath, existToken)
+			remoteVer := probeDaemonVersion(network, address, existToken)
 			if remoteVer != "" && remoteVer != Version {
 				fmt.Fprintf(os.Stderr, "existing daemon version %q != current %q, stopping it\n", remoteVer, Version)
 				canReuse = false
@@ -208,6 +238,12 @@ func cmdServe() {
 				"version": Version,
 				"reused":  true,
 			}
+			// 读回已存在 daemon 写的 dialSpec；缺失时回退到 unix:socket（兼容老实例）。
+			if data, err := os.ReadFile(storage.EndpointPath()); err == nil && strings.TrimSpace(string(data)) != "" {
+				ready["endpoint"] = strings.TrimSpace(string(data))
+			} else {
+				ready["endpoint"] = "unix:" + socketPath
+			}
 			if existHTTP, err := os.ReadFile(storage.HTTPAddrPath()); err == nil {
 				ready["http"] = strings.TrimSpace(string(existHTTP))
 			}
@@ -216,11 +252,11 @@ func cmdServe() {
 			fmt.Fprintf(os.Stderr, "daemon already running (pid %d), reusing\n", existPID)
 			os.Exit(0)
 		}
-		// kill the old daemon before starting
-		if proc, err := os.FindProcess(existPID); err == nil {
-			_ = proc.Signal(syscall.SIGTERM)
-			time.Sleep(500 * time.Millisecond)
-		}
+		// kill the old daemon before starting.
+		// 走平台相关的 procutil.Kill：Unix 发 SIGTERM 触发优雅关停，
+		// Windows 走 TerminateProcess（os.Process.Signal 对非 Kill 信号是 no-op）。
+		_ = procutil.Kill(existPID)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	pid := os.Getpid()
@@ -235,12 +271,15 @@ func cmdServe() {
 		os.Remove(httpAddrPath)
 	}
 
+	endpointPath := storage.EndpointPath()
+
 	shutdown := func() {
 		fmt.Fprintf(os.Stderr, "all clients disconnected, shutting down\n")
 		os.Remove(socketPath)
 		os.Remove(pidPath)
 		os.Remove(tokenPath)
 		os.Remove(httpAddrPath)
+		os.Remove(endpointPath)
 		os.Exit(0)
 	}
 
@@ -264,14 +303,28 @@ func cmdServe() {
 		os.Remove(pidPath)
 		os.Remove(tokenPath)
 		os.Remove(httpAddrPath)
+		os.Remove(endpointPath)
 		os.Exit(0)
 	}()
 
+	// 先绑定 IPC 监听器拿到 dialSpec（Windows 动态端口此时才确定），再打印 ready JSON。
+	dialSpec, err := srv.Listen(socketPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+		os.Remove(socketPath)
+		os.Remove(pidPath)
+		os.Remove(tokenPath)
+		os.Remove(httpAddrPath)
+		os.Remove(endpointPath)
+		os.Exit(1)
+	}
+
 	ready := map[string]interface{}{
-		"socket":  socketPath,
-		"pid":     pid,
-		"token":   token,
-		"version": Version,
+		"socket":   socketPath,
+		"endpoint": dialSpec,
+		"pid":      pid,
+		"token":    token,
+		"version":  Version,
 	}
 	if flags.httpAddr != "" {
 		ready["http"] = flags.httpAddr
@@ -288,12 +341,13 @@ func cmdServe() {
 		}()
 	}
 
-	if err := srv.ListenAndServe(socketPath); err != nil {
+	if err := srv.Serve(); err != nil {
 		fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 		os.Remove(socketPath)
 		os.Remove(pidPath)
 		os.Remove(tokenPath)
 		os.Remove(httpAddrPath)
+		os.Remove(endpointPath)
 		os.Exit(1)
 	}
 }
@@ -305,18 +359,12 @@ func cmdStatus() {
 		fmt.Println(`{"running":false,"storage":"` + storage.Dir() + `"}`)
 		return
 	}
-	pid, err := strconv.Atoi(string(data))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
 	if err != nil {
 		fmt.Println(`{"running":false,"storage":"` + storage.Dir() + `"}`)
 		return
 	}
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		fmt.Println(`{"running":false,"storage":"` + storage.Dir() + `"}`)
-		return
-	}
-	err = proc.Signal(syscall.Signal(0))
-	running := err == nil
+	running := procutil.IsAlive(pid)
 
 	result := map[string]interface{}{
 		"running": running,

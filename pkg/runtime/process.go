@@ -179,7 +179,7 @@ func (p *ProcessHandle) Stop(timeout time.Duration) error {
 	exitCh := p.exitCh
 	p.mu.Unlock()
 
-	cmd.Process.Signal(os.Interrupt)
+	_ = terminateGraceful(cmd)
 
 	if timeout == 0 {
 		timeout = 5 * time.Second

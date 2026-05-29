@@ -41,6 +41,9 @@ func TestDirAndPaths(t *testing.T) {
 	if got := HTTPAddrPath(); got != filepath.Join(dir, ".daemon.http") {
 		t.Errorf("HTTPAddrPath() = %q", got)
 	}
+	if got := EndpointPath(); got != filepath.Join(dir, ".daemon.endpoint") {
+		t.Errorf("EndpointPath() = %q", got)
+	}
 	if got := ModelDir("m1"); got != filepath.Join(dir, "m1") {
 		t.Errorf("ModelDir() = %q", got)
 	}
