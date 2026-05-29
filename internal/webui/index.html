@@ -19,7 +19,7 @@ a{color:var(--accent);text-decoration:none}
 .sidebar .spacer{flex:1}
 .sidebar .ver{padding:8px 16px;font-size:11px;color:var(--border)}
 
-.main{flex:1;overflow-y:auto;padding:24px 32px;display:flex;flex-direction:column}
+.main{flex:1;min-width:0;overflow-y:auto;padding:24px 32px}
 .main h2{font-size:18px;margin-bottom:16px;font-weight:600}
 
 .page{display:none}
@@ -337,19 +337,22 @@ textarea{resize:vertical;min-height:60px}
           <summary style="cursor:pointer;font-size:12px;color:var(--text2)">识别参数</summary>
           <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;padding:10px;margin-top:6px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius)">
             <label style="font-size:12px;color:var(--text2)">检测框阈值
-              <input type="number" id="ocr-box-thresh" value="" min="0" max="1" step="0.05" placeholder="0.6" style="margin-top:2px">
+              <input type="number" id="ocr-box-thresh" value="0.65" min="0" max="1" step="0.05" placeholder="0.5" style="margin-top:2px">
             </label>
             <label style="font-size:12px;color:var(--text2)">识别置信度阈值
-              <input type="number" id="ocr-rec-thresh" value="" min="0" max="1" step="0.05" placeholder="0.0" style="margin-top:2px">
+              <input type="number" id="ocr-rec-thresh" value="0.5" min="0" max="1" step="0.05" placeholder="0.5" style="margin-top:2px">
             </label>
             <label style="font-size:12px;color:var(--text2)">检测像素阈值
-              <input type="number" id="ocr-det-thresh" value="" min="0" max="1" step="0.05" placeholder="0.3" style="margin-top:2px">
+              <input type="number" id="ocr-det-thresh" value="0.45" min="0" max="1" step="0.05" placeholder="0.3" style="margin-top:2px">
             </label>
             <label style="font-size:12px;color:var(--text2)">检测长边限制
               <input type="number" id="ocr-det-limit" value="" min="320" step="32" placeholder="960" style="margin-top:2px">
             </label>
             <label style="font-size:12px;color:var(--text2)">输入长边缩放
               <input type="number" id="ocr-max-side" value="1280" min="320" step="32" placeholder="1280" style="margin-top:2px">
+            </label>
+            <label style="font-size:12px;color:var(--text2)" title="输入图像的最小边长（预处理缩放下限），非检测框尺寸；仅 RapidOCR 生效">图像最小边长
+              <input type="number" id="ocr-min-side-len" value="" min="0" step="32" placeholder="不限制" style="margin-top:2px">
             </label>
             <label style="font-size:12px;color:var(--text2);display:flex;gap:6px;align-items:center;margin-top:20px">
               <input type="checkbox" id="ocr-use-cls" style="width:auto">方向分类
@@ -358,9 +361,17 @@ textarea{resize:vertical;min-height:60px}
         </details>
       </div>
       <div class="card" id="ocr-result-card" style="display:none">
-        <h3>识别结果</h3>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <h3 style="margin:0">识别结果</h3>
+          <div style="display:flex;gap:4px">
+            <button class="sm" id="ocr-view-blocks" onclick="setOCRView('blocks')">聚合分块</button>
+            <button class="sm" id="ocr-view-lines" onclick="setOCRView('lines')">原始行</button>
+            <button class="sm" onclick="copyOCRText()">复制文本</button>
+          </div>
+        </div>
         <div id="ocr-meta" style="font-size:12px;color:var(--text2);margin-top:4px"></div>
-        <div id="ocr-text-result" style="font-size:14px;line-height:1.8;margin-top:8px;white-space:pre-wrap"></div>
+        <div id="ocr-blocks-result" style="margin-top:8px"></div>
+        <div id="ocr-text-result" style="font-size:14px;line-height:1.8;margin-top:8px;white-space:pre-wrap;display:none"></div>
         <details style="margin-top:12px">
           <summary style="cursor:pointer;font-size:12px;color:var(--text2)">原始 JSON</summary>
           <pre id="ocr-json-result" style="font-size:11px;margin-top:4px;max-height:300px;overflow-y:auto;background:#0a0c12;padding:8px;border-radius:var(--radius);color:var(--text2)"></pre>
@@ -1305,7 +1316,7 @@ async function runOCR() {
   ocrSending = true;
   document.getElementById('ocr-send').disabled = true;
   document.getElementById('ocr-result-card').style.display = 'block';
-  document.getElementById('ocr-text-result').textContent = '识别中...';
+  ocrStatusMessage('识别中...');
   document.getElementById('ocr-json-result').textContent = '';
   document.getElementById('ocr-meta').textContent = '';
 
@@ -1319,6 +1330,7 @@ async function runOCR() {
       ['det_thresh', 'ocr-det-thresh'],
       ['det_limit_side_len', 'ocr-det-limit'],
       ['max_side', 'ocr-max-side'],
+      ['min_side_len', 'ocr-min-side-len'],
     ];
     for (const [qname, elId] of ocrParams) {
       const v = document.getElementById(elId).value.trim();
@@ -1335,36 +1347,99 @@ async function runOCR() {
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      document.getElementById('ocr-text-result').textContent = '错误: ' + (err.error?.message || err.error || res.status);
+      ocrStatusMessage('错误: ' + (err.error?.message || err.error || res.status));
       return;
     }
 
     const data = await res.json();
-    document.getElementById('ocr-json-result').textContent = JSON.stringify(data, null, 2);
-
-    const items = data.items || data;
-    const elapsed = data.elapsed_ms;
-    if (elapsed !== undefined) {
-      document.getElementById('ocr-meta').textContent = `耗时: ${elapsed}ms`;
-    }
-
-    if (Array.isArray(items) && items.length > 0) {
-      const lines = items.map(item => {
-        const conf = (item.confidence * 100).toFixed(1);
-        return `${item.text}  (${conf}%)`;
-      });
-      document.getElementById('ocr-text-result').textContent = lines.join('\n');
-    } else if (Array.isArray(items) && items.length === 0) {
-      document.getElementById('ocr-text-result').textContent = '(未识别到文字)';
-    } else {
-      document.getElementById('ocr-text-result').textContent = JSON.stringify(data, null, 2);
-    }
+    renderOCRResult(data);
   } catch (err) {
-    document.getElementById('ocr-text-result').textContent = '请求失败: ' + err.message;
+    ocrStatusMessage('请求失败: ' + err.message);
   } finally {
     ocrSending = false;
     document.getElementById('ocr-send').disabled = false;
   }
+}
+
+let ocrLastData = null;
+let ocrView = 'blocks';
+
+function ocrStatusMessage(msg) {
+  document.getElementById('ocr-blocks-result').textContent = msg;
+  document.getElementById('ocr-blocks-result').style.display = 'block';
+  document.getElementById('ocr-text-result').style.display = 'none';
+}
+
+function escapeHTML(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+}
+
+function renderOCRResult(data) {
+  ocrLastData = data;
+  document.getElementById('ocr-json-result').textContent = JSON.stringify(data, null, 2);
+
+  const items = Array.isArray(data) ? data : (data.items || []);
+  const blocks = (data && data.blocks) || [];
+  const elapsed = data && data.elapsed_ms;
+
+  const meta = [];
+  if (elapsed !== undefined) meta.push(`耗时: ${elapsed}ms`);
+  meta.push(`${blocks.length} 块 / ${items.length} 行`);
+  document.getElementById('ocr-meta').textContent = meta.join('  ·  ');
+
+  // Aggregated blocks view: each group is a card; lines joined by newline.
+  const blocksEl = document.getElementById('ocr-blocks-result');
+  if (blocks.length > 0) {
+    blocksEl.innerHTML = blocks.map(b => {
+      const conf = (b.confidence * 100).toFixed(1);
+      return `<div style="border:1px solid var(--border);border-radius:var(--radius);padding:8px 10px;margin-bottom:8px;background:#0a0c12">
+        <div style="font-size:14px;line-height:1.8;white-space:pre-wrap">${escapeHTML(b.text)}</div>
+        <div style="font-size:11px;color:var(--text2);margin-top:4px">置信度 ${conf}%</div>
+      </div>`;
+    }).join('');
+  } else if (data && typeof data.text === 'string' && data.text) {
+    blocksEl.innerHTML = `<div style="font-size:14px;line-height:1.8;white-space:pre-wrap">${escapeHTML(data.text)}</div>`;
+  } else if (items.length === 0) {
+    blocksEl.textContent = '(未识别到文字)';
+  } else {
+    blocksEl.textContent = items.map(it => it.text).join('\n');
+  }
+
+  // Raw lines view: one detection per line with confidence.
+  const textEl = document.getElementById('ocr-text-result');
+  if (items.length > 0) {
+    textEl.textContent = items.map(it => `${it.text}  (${(it.confidence * 100).toFixed(1)}%)`).join('\n');
+  } else {
+    textEl.textContent = '(未识别到文字)';
+  }
+
+  setOCRView(ocrView);
+}
+
+function setOCRView(view) {
+  ocrView = view;
+  const showBlocks = view === 'blocks';
+  document.getElementById('ocr-blocks-result').style.display = showBlocks ? 'block' : 'none';
+  document.getElementById('ocr-text-result').style.display = showBlocks ? 'none' : 'block';
+  const bb = document.getElementById('ocr-view-blocks');
+  const lb = document.getElementById('ocr-view-lines');
+  if (bb && lb) {
+    bb.style.opacity = showBlocks ? '1' : '0.5';
+    lb.style.opacity = showBlocks ? '0.5' : '1';
+  }
+}
+
+function copyOCRText() {
+  if (!ocrLastData) return;
+  let text = '';
+  if (ocrView === 'blocks') {
+    text = (typeof ocrLastData.text === 'string' && ocrLastData.text)
+      ? ocrLastData.text
+      : ((ocrLastData.items || []).map(it => it.text).join('\n'));
+  } else {
+    text = (ocrLastData.items || []).map(it => it.text).join('\n');
+  }
+  navigator.clipboard.writeText(text).then(() => toast('已复制'), () => toast('复制失败'));
 }
 
 // --- 接口调试 ---

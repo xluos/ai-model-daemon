@@ -21,6 +21,18 @@ import (
 	"github.com/xluos/ai-model-daemon/pkg/storage"
 )
 
+// ocrDefaults are the daemon-level default OCR parameters, used to back-fill
+// any value a caller of /v1/ocr does not set explicitly. Keep in sync with the
+// WebUI form defaults in internal/webui/index.html.
+//   - box_thresh: detection box score threshold (engine default 0.5)
+//   - rec_thresh: recognition score threshold / text_score (engine default 0.5)
+//   - det_thresh: DB binarization threshold (engine default 0.3)
+var ocrDefaults = map[string]string{
+	"box_thresh": "0.65",
+	"rec_thresh": "0.5",
+	"det_thresh": "0.45",
+}
+
 type Proxy struct {
 	scheduler *queue.Scheduler
 	rtm       *runtime.RuntimeManager
@@ -344,6 +356,14 @@ func (p *Proxy) HandleOCR(w http.ResponseWriter, r *http.Request) {
 			ocrQuery.Set(k, v)
 		}
 	}
+	// Daemon-level OCR defaults: applied when a caller does not pass the
+	// parameter explicitly, so integrating apps get the tuned behavior too.
+	// Keep these in sync with the WebUI form defaults (internal/webui).
+	for k, v := range ocrDefaults {
+		if ocrQuery.Get(k) == "" {
+			ocrQuery.Set(k, v)
+		}
+	}
 
 	if err := p.scheduler.HTTPHandler(kind, modelID, clientID, queue.PriorityNormal, w, r, func() {
 		target := p.scheduler.ProxyTarget(kind)
@@ -431,12 +451,15 @@ func proxyOCR(w http.ResponseWriter, r *http.Request, targetBase string, body []
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	var result json.RawMessage
-	if json.Unmarshal(respBody, &result) == nil {
+	var items []ocrItem
+	if resp.StatusCode == http.StatusOK && json.Unmarshal(respBody, &items) == nil {
+		text, blocks := aggregateOCR(items)
 		wrapped := struct {
-			Items     json.RawMessage `json:"items"`
-			ElapsedMS int64           `json:"elapsed_ms"`
-		}{Items: result, ElapsedMS: elapsed}
+			Items     []ocrItem  `json:"items"`
+			Text      string     `json:"text"`
+			Blocks    []ocrBlock `json:"blocks"`
+			ElapsedMS int64      `json:"elapsed_ms"`
+		}{Items: items, Text: text, Blocks: blocks, ElapsedMS: elapsed}
 		out, _ := json.Marshal(wrapped)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(resp.StatusCode)

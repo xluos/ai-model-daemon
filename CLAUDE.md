@@ -68,6 +68,9 @@ internal/
 - Build: `go build -o ai-model-daemon .`
 - Install: `go build -o ~/.local/bin/ai-model-daemon .`
 - Run CLI: `go run . <command>`
+- Test: `go test ./...`
+
+> **改完代码后必须走一遍单测**：任何修改完成后都要运行 `go test ./...` 确认全绿，再视情况补充对应包的测试用例。涉及嵌入式 Web UI（`internal/webui/index.html`）改动时，额外用 `go build ./...` 确认重新 embed 成功。
 
 ### CLI Commands
 
